@@ -1,0 +1,25 @@
+[toolchain]
+package_manager = "yarn"
+solana_version = "2.1.0"
+anchor_version = "0.31.1"
+
+[features]
+resolution = true
+skip-lint = false
+
+[programs.localnet]
+adrastia_chainlink_data_streams_feed_solana = "Cwpu7Mkico7d873oUZmTpCvkxuFjNX1bGmhWFfxbByta"
+
+[programs.devnet]
+adrastia_chainlink_data_streams_feed_solana = "Cwpu7Mkico7d873oUZmTpCvkxuFjNX1bGmhWFfxbByta"
+
+[registry]
+url = "https://api.apr.dev"
+
+[provider]
+cluster = "devnet"
+#cluster = "localnet"
+wallet = "~/.config/solana/id.json"
+
+[scripts]
+test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"

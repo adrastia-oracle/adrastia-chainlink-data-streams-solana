@@ -3,7 +3,8 @@
   "license": "ISC",
   "scripts": {
     "lint:fix": "prettier */*.js \"*/**/*{.js,.ts}\" -w",
-    "lint": "prettier */*.js \"*/**/*{.js,.ts}\" --check"
+    "lint": "prettier */*.js \"*/**/*{.js,.ts}\" --check",
+    "generate:keypair": "solana-keygen new --outfile target/deploy/adrastia_chainlink_data_streams_feed_solana-keypair.json"
   },
   "dependencies": {
     "@chainlink/solana-sdk": "^0.2.2",

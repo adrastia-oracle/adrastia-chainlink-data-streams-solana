@@ -693,19 +693,6 @@ pub struct AdminOnly<'info> {
 }
 
 #[derive(Accounts)]
-pub struct AdminOnlyWithVerifier<'info> {
-    #[account(mut)]
-    pub feed: Account<'info, Feed>,
-    pub admin: Signer<'info>,
-    /// CHECK: validated in handler
-    pub new_verifier_program_id: AccountInfo<'info>,
-    /// CHECK: validated in handler
-    pub new_verifier_account: AccountInfo<'info>,
-    /// CHECK: validated in handler
-    pub new_access_controller: AccountInfo<'info>,
-}
-
-#[derive(Accounts)]
 pub struct ReadFeed<'info> {
     #[account(seeds = [b"feed".as_ref(), feed.feed_id.as_ref()], bump)]
     pub feed: Account<'info, Feed>,

@@ -40,6 +40,7 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
     // Rotate global admin later.
     pub fn set_global_admin(ctx: Context<SetGlobalAdmin>, new_admin: Pubkey) -> Result<()> {
         require!(ctx.accounts.current_admin.key() == ctx.accounts.config.admin, ErrorCode::GlobalAdminMismatch);
+        require!(ctx.accounts.config.admin != new_admin, ErrorCode::GlobalAdminNotChanged);
         let old = ctx.accounts.config.admin;
         ctx.accounts.config.admin = new_admin;
         emit!(GlobalAdminChanged {
@@ -857,4 +858,6 @@ pub enum ErrorCode {
     Reentrancy,
     #[msg("Invalid history capacity")]
     InvalidHistoryCapacity,
+    #[msg("Global admin not changed")]
+    GlobalAdminNotChanged,
 }

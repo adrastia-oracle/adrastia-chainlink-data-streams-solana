@@ -34,6 +34,7 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
     // Stores global admin + verifier tuple.
     pub fn init_program_config(ctx: Context<InitProgramConfig>) -> Result<()> {
         require!(ctx.accounts.admin.key() == GLOBAL_BOOTSTRAP_ADMIN, ErrorCode::UnauthorizedAdmin);
+        require!(ctx.accounts.admin.key() != Pubkey::default(), ErrorCode::AdminCannotBeZero);
 
         require!(ctx.accounts.verifier_program_id.executable, ErrorCode::BadVerifierProgram);
         require!(
@@ -52,12 +53,29 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
     // Rotate global admin later.
     pub fn set_global_admin(ctx: Context<SetGlobalAdmin>, new_admin: Pubkey) -> Result<()> {
         require!(ctx.accounts.current_admin.key() == ctx.accounts.config.admin, ErrorCode::GlobalAdminMismatch);
+        require!(new_admin != Pubkey::default(), ErrorCode::AdminCannotBeZero);
         require!(ctx.accounts.config.admin != new_admin, ErrorCode::GlobalAdminNotChanged);
         let old = ctx.accounts.config.admin;
         ctx.accounts.config.admin = new_admin;
         emit!(GlobalAdminChanged {
             old_admin: old,
             new_admin,
+            timestamp: Clock::get()?.unix_timestamp,
+        });
+        Ok(())
+    }
+
+    // CURRENT global admin can retire (sets config.admin = Pubkey::default()).
+    pub fn retire_global_admin(ctx: Context<RetireGlobalAdmin>) -> Result<()> {
+        let cfg = &mut ctx.accounts.config;
+        require!(ctx.accounts.current_admin.key() == cfg.admin, ErrorCode::GlobalAdminMismatch);
+
+        let old = cfg.admin;
+        cfg.admin = Pubkey::default();
+
+        emit!(GlobalAdminChanged {
+            old_admin: old,
+            new_admin: Pubkey::default(),
             timestamp: Clock::get()?.unix_timestamp,
         });
         Ok(())
@@ -73,6 +91,7 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
     ) -> Result<()> {
         // Only the current global admin (stored in ProgramConfig) can initialize feeds.
         require!(ctx.accounts.admin.key() == ctx.accounts.config.admin, ErrorCode::GlobalAdminMismatch);
+        require!(feed_admin != Pubkey::default(), ErrorCode::AdminCannotBeZero);
 
         let f = &mut ctx.accounts.feed;
         f.feed_id = feed_id;
@@ -114,6 +133,7 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
     pub fn set_feed_admin(ctx: Context<AdminOnly>, new_admin: Pubkey) -> Result<()> {
         let feed = &mut ctx.accounts.feed;
         require!(ctx.accounts.admin.key() == feed.admin, ErrorCode::FeedAdminMismatch);
+        require!(new_admin != Pubkey::default(), ErrorCode::AdminCannotBeZero);
         require!(new_admin != feed.admin, ErrorCode::FeedAdminNotChanged);
         let old = feed.admin;
         feed.admin = new_admin;
@@ -121,6 +141,23 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
             feed_id: feed.feed_id,
             old_admin: old,
             new_admin,
+            timestamp: Clock::get()?.unix_timestamp,
+        });
+        Ok(())
+    }
+
+    // CURRENT feed admin can retire (sets feed.admin = Pubkey::default()).
+    pub fn retire_feed_admin(ctx: Context<AdminOnly>) -> Result<()> {
+        let feed = &mut ctx.accounts.feed;
+        require!(ctx.accounts.admin.key() == feed.admin, ErrorCode::FeedAdminMismatch);
+
+        let old = feed.admin;
+        feed.admin = Pubkey::default();
+
+        emit!(FeedAdminChanged {
+            feed_id: feed.feed_id,
+            old_admin: old,
+            new_admin: Pubkey::default(),
             timestamp: Clock::get()?.unix_timestamp,
         });
         Ok(())
@@ -705,6 +742,14 @@ pub struct InitHistoryRing<'info> {
 }
 
 #[derive(Accounts)]
+pub struct RetireGlobalAdmin<'info> {
+    #[account(mut, seeds = [b"config".as_ref()], bump)]
+    pub config: Account<'info, ProgramConfig>,
+    /// Current global admin
+    pub current_admin: Signer<'info>,
+}
+
+#[derive(Accounts)]
 pub struct AdminOnly<'info> {
     #[account(mut)]
     pub feed: Account<'info, Feed>,
@@ -881,4 +926,6 @@ pub enum ErrorCode {
     GlobalAdminNotChanged,
     #[msg("Feed admin not changed")]
     FeedAdminNotChanged,
+    #[msg("Admin pubkey cannot be zero")]
+    AdminCannotBeZero,
 }

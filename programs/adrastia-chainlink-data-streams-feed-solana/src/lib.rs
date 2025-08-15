@@ -40,9 +40,10 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
     // Rotate global admin later.
     pub fn set_global_admin(ctx: Context<SetGlobalAdmin>, new_admin: Pubkey) -> Result<()> {
         require!(ctx.accounts.current_admin.key() == ctx.accounts.config.admin, ErrorCode::GlobalAdminMismatch);
+        let old = ctx.accounts.config.admin;
         ctx.accounts.config.admin = new_admin;
         emit!(GlobalAdminChanged {
-            old_admin: ctx.accounts.config.admin,
+            old_admin: old,
             new_admin,
             timestamp: Clock::get()?.unix_timestamp,
         });

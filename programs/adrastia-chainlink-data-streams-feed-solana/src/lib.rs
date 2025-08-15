@@ -210,16 +210,11 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
         require!(report.observations_timestamp != 0, ErrorCode::InvalidReport);
         require!(now >= report.observations_timestamp, ErrorCode::ObservationInFuture);
         require!(now >= report.valid_from_timestamp, ErrorCode::ReportNotValidYet);
-        require!(now < report.expires_at, ErrorCode::ReportExpired);
 
         let last = feed.latest;
         if last.round_id != 0 {
             require!(
-                !(
-                    report.price_i128 == last.price &&
-                    report.observations_timestamp == last.observation_timestamp &&
-                    report.expires_at == last.expires_at
-                ),
+                !(report.price_i128 == last.price && report.observations_timestamp == last.observation_timestamp),
                 ErrorCode::DuplicateReport
             );
             require!(report.observations_timestamp > last.observation_timestamp, ErrorCode::StaleReport);
@@ -237,7 +232,6 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
                     round_id: new_round_id,
                     price: report.price_i128,
                     observation_timestamp: report.observations_timestamp,
-                    expires_at: report.expires_at,
                     storage_timestamp: now,
                 };
                 if let Err(e) = invoke_hook(cfg.program, 0, &payload) {
@@ -267,9 +261,9 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
             ring.records[idx] = RoundRecord {
                 price: report.price_i128,
                 observation_timestamp: report.observations_timestamp,
-                expires_at: report.expires_at,
                 storage_timestamp: now,
                 round_id: new_round_id,
+                _reserved: [0; 8],
             };
             ring.write_index = (w + 1) % cap;
             if len < cap {
@@ -286,7 +280,6 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
         let rec = TruncatedReport {
             price: report.price_i128,
             observation_timestamp: report.observations_timestamp,
-            expires_at: report.expires_at,
             storage_timestamp: now,
             round_id: new_round_id,
         };
@@ -300,7 +293,6 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
             price: rec.price,
             valid_from_timestamp: report.valid_from_timestamp,
             observations_timestamp: rec.observation_timestamp,
-            expires_at: rec.expires_at,
             timestamp: now,
         });
 
@@ -313,7 +305,6 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
                     round_id: new_round_id,
                     price: rec.price,
                     observation_timestamp: rec.observation_timestamp,
-                    expires_at: rec.expires_at,
                     storage_timestamp: now,
                 };
                 if let Err(e) = invoke_hook(cfg.program, 1, &payload) {
@@ -341,8 +332,6 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
         let feed = &ctx.accounts.feed;
         require!(feed.last_round_id != 0, ErrorCode::MissingReport);
         let latest = feed.latest;
-        let now = Clock::get()?.unix_timestamp;
-        require!(now < latest.expires_at, ErrorCode::ReportExpired);
         let out = LatestRoundData {
             round_id: latest.round_id,
             answer: latest.price,
@@ -441,7 +430,6 @@ struct NormalizedReport {
     price_i128: i128,
     valid_from_timestamp: i64,
     observations_timestamp: i64,
-    expires_at: i64,
 }
 
 #[account(zero_copy)]
@@ -461,21 +449,20 @@ pub struct HistoryRing {
 pub struct RoundRecord {
     pub price: i128,
     pub observation_timestamp: i64,
-    pub expires_at: i64,
     pub storage_timestamp: i64,
     pub round_id: u64,
+    pub _reserved: [u8; 8],
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Default)]
 pub struct TruncatedReport {
     pub price: i128,
     pub observation_timestamp: i64,
-    pub expires_at: i64,
     pub storage_timestamp: i64,
     pub round_id: u64,
 }
 impl TruncatedReport {
-    pub const SIZE: usize = 16 + 8 + 8 + 8 + 8;
+    pub const SIZE: usize = 16 + 8 + 8 + 8;
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize)]
@@ -517,7 +504,6 @@ pub struct HookPayload {
     pub round_id: u64,
     pub price: i128,
     pub observation_timestamp: i64,
-    pub expires_at: i64,
     pub storage_timestamp: i64,
 }
 
@@ -559,7 +545,6 @@ fn decode_report_by_version(ret: &[u8], version: u16) -> Result<NormalizedReport
                 price_i128: price,
                 valid_from_timestamp: r.valid_from_timestamp as i64,
                 observations_timestamp: r.observations_timestamp as i64,
-                expires_at: r.expires_at as i64,
             })
         }
         3 => {
@@ -570,7 +555,6 @@ fn decode_report_by_version(ret: &[u8], version: u16) -> Result<NormalizedReport
                 price_i128: price,
                 valid_from_timestamp: r.valid_from_timestamp as i64,
                 observations_timestamp: r.observations_timestamp as i64,
-                expires_at: r.expires_at as i64,
             })
         }
         2 => {
@@ -581,7 +565,6 @@ fn decode_report_by_version(ret: &[u8], version: u16) -> Result<NormalizedReport
                 price_i128: price,
                 valid_from_timestamp: r.valid_from_timestamp as i64,
                 observations_timestamp: r.observations_timestamp as i64,
-                expires_at: r.expires_at as i64,
             })
         }
         _ => Err(error!(ErrorCode::InvalidReportVersion)),
@@ -744,7 +727,6 @@ pub struct ReportUpdated {
     pub price: i128,
     pub valid_from_timestamp: i64,
     pub observations_timestamp: i64,
-    pub expires_at: i64,
     pub timestamp: i64,
 }
 
@@ -782,8 +764,6 @@ pub enum ErrorCode {
     NoReportData,
     #[msg("Invalid report data format")]
     InvalidReportData,
-    #[msg("Report expired")]
-    ReportExpired,
     #[msg("Report is not yet valid")]
     ReportNotValidYet,
     #[msg("Report observation time is in the future")]

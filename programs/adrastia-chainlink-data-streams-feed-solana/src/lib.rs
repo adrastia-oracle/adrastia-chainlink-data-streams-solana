@@ -135,7 +135,7 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
 
     // ---------- Admin ----------
     // NEW: only current feed admin can change to a new admin
-    pub fn set_feed_admin(ctx: Context<AdminOnly>, new_admin: Pubkey) -> Result<()> {
+    pub fn set_feed_admin(ctx: Context<FeedAdminOnly>, new_admin: Pubkey) -> Result<()> {
         let feed = &mut ctx.accounts.feed;
         require!(ctx.accounts.admin.key() == feed.admin, ErrorCode::FeedAdminMismatch);
         require!(new_admin != Pubkey::default(), ErrorCode::AdminCannotBeZero);
@@ -152,7 +152,7 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
     }
 
     // CURRENT feed admin can retire (sets feed.admin = Pubkey::default()).
-    pub fn retire_feed_admin(ctx: Context<AdminOnly>) -> Result<()> {
+    pub fn retire_feed_admin(ctx: Context<FeedAdminOnly>) -> Result<()> {
         let feed = &mut ctx.accounts.feed;
         require!(ctx.accounts.admin.key() == feed.admin, ErrorCode::FeedAdminMismatch);
 
@@ -168,7 +168,7 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
         Ok(())
     }
 
-    pub fn set_paused(ctx: Context<AdminOnly>, paused: bool) -> Result<()> {
+    pub fn set_paused(ctx: Context<FeedAdminOnly>, paused: bool) -> Result<()> {
         let feed = &mut ctx.accounts.feed;
         require!(ctx.accounts.admin.key() == feed.admin, ErrorCode::FeedAdminMismatch);
         require!(feed.paused != paused, ErrorCode::PauseStatusNotChanged);
@@ -181,7 +181,7 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
         Ok(())
     }
 
-    pub fn set_hook_config(ctx: Context<AdminOnly>, hook_type: u8, cfg: Hook) -> Result<()> {
+    pub fn set_hook_config(ctx: Context<FeedAdminOnly>, hook_type: u8, cfg: Hook) -> Result<()> {
         let feed = &mut ctx.accounts.feed;
         require!(ctx.accounts.admin.key() == feed.admin, ErrorCode::FeedAdminMismatch);
         require!((hook_type as usize) < MAX_HOOK_TYPES, ErrorCode::InvalidHookType);
@@ -755,7 +755,7 @@ pub struct RetireGlobalAdmin<'info> {
 }
 
 #[derive(Accounts)]
-pub struct AdminOnly<'info> {
+pub struct FeedAdminOnly<'info> {
     #[account(mut)]
     pub feed: Account<'info, Feed>,
     pub admin: Signer<'info>,

@@ -16,7 +16,7 @@ use chainlink_data_streams_report::report::{
 };
 use num_traits::cast::ToPrimitive;
 
-declare_id!("Cwpu7Mkico7d873oUZmTpCvkxuFjNX1bGmhWFfxbByta");
+declare_id!("ALZsBRmiqqgKtZyFgNh9iumEaWk3qn3wsiiMJiMdbvMP");
 
 // ⚠️ REPLACE BEFORE DEPLOY: only this signer can run `init_program_config` once.
 pub const GLOBAL_BOOTSTRAP_ADMIN: Pubkey = pubkey!("634xiC5wufdbogSag2Q5koeRvJuUBQJ8vaU9j376oL2Q");

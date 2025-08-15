@@ -46,7 +46,7 @@ const REPORT_TESTNET_ETHUSD_3 =
 
 // ---- IDs ----
 // Your program (this repo)
-const PROGRAM_ID = new PublicKey("Cwpu7Mkico7d873oUZmTpCvkxuFjNX1bGmhWFfxbByta");
+const PROGRAM_ID = new PublicKey("ALZsBRmiqqgKtZyFgNh9iumEaWk3qn3wsiiMJiMdbvMP");
 
 const BOOTSTRAP_ADMIN = new PublicKey("634xiC5wufdbogSag2Q5koeRvJuUBQJ8vaU9j376oL2Q");
 
@@ -208,6 +208,9 @@ async function main() {
         [signedReport.slice(0, 32)], // uncompressed slice
         VERIFIER_PROGRAM_ID,
     )[0];
+
+    console.log("Verifier PDA:", VERIFIER_ACCOUNT.toBase58());
+    console.log("Config PDA:", CONFIG_ACCOUNT.toBase58());
 
     // Ensure feed + history ring exist
     const { feed, ring } = await ensureFeedAndRing(program, provider.wallet.publicKey, feedId, decimals, description);

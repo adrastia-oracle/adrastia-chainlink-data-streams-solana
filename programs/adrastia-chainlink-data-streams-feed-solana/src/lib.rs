@@ -92,7 +92,7 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
         feed_id: [u8; 32],
         decimals: u8,
         description_ascii_32: [u8; 32],
-        feed_admin: Pubkey // <- NEW: explicit feed admin
+        feed_admin: Pubkey
     ) -> Result<()> {
         // Only the current global admin (stored in ProgramConfig) can initialize feeds.
         require!(ctx.accounts.admin.key() == ctx.accounts.config.admin, ErrorCode::GlobalAdminMismatch);
@@ -102,7 +102,7 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
         f.feed_id = feed_id;
         f.decimals = decimals;
         f.description = description_ascii_32;
-        f.admin = feed_admin; // <- set to explicit admin (can be any pubkey)
+        f.admin = feed_admin;
         f.paused = false;
         f.active_hook_types = 0;
         f.hooks = [Hook::default(); MAX_HOOK_TYPES];
@@ -134,7 +134,7 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
     }
 
     // ---------- Admin ----------
-    // NEW: only current feed admin can change to a new admin
+    // Only current feed admin can change to a new admin
     pub fn set_feed_admin(ctx: Context<FeedAdminOnly>, new_admin: Pubkey) -> Result<()> {
         let feed = &mut ctx.accounts.feed;
         require!(ctx.accounts.admin.key() == feed.admin, ErrorCode::FeedAdminMismatch);

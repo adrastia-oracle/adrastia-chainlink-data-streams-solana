@@ -230,6 +230,8 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
         feed_id: [u8; 32],
         signed_report: Vec<u8>
     ) -> Result<()> {
+        require!(!signed_report.is_empty(), ErrorCode::NoReportData);
+
         let feed = &mut ctx.accounts.feed;
         let cfg = &ctx.accounts.config;
 

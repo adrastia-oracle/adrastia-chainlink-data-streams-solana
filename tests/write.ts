@@ -174,7 +174,7 @@ export async function ensureFeedAndRing(
     if (!feedAcc) {
         console.log("Initializing feed...");
         await program.methods
-            .initFeed(Array.from(feedId) as any, decimals, Array.from(descriptionAscii32) as any)
+            .initFeed(Array.from(feedId) as any, decimals, Array.from(descriptionAscii32) as any, adminPubkey)
             .accountsPartial({
                 // required by your InitFeed context:
                 config: CONFIG,

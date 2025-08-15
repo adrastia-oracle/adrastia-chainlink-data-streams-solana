@@ -68,7 +68,8 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
         ctx: Context<InitFeed>,
         feed_id: [u8; 32],
         decimals: u8,
-        description_ascii_32: [u8; 32]
+        description_ascii_32: [u8; 32],
+        feed_admin: Pubkey // <- NEW: explicit feed admin
     ) -> Result<()> {
         // Only the current global admin (stored in ProgramConfig) can initialize feeds.
         require!(ctx.accounts.admin.key() == ctx.accounts.config.admin, ErrorCode::GlobalAdminMismatch);
@@ -77,13 +78,20 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
         f.feed_id = feed_id;
         f.decimals = decimals;
         f.description = description_ascii_32;
-        f.admin = ctx.accounts.admin.key();
+        f.admin = feed_admin; // <- set to explicit admin (can be any pubkey)
         f.paused = false;
         f.active_hook_types = 0;
         f.hooks = [Hook::default(); MAX_HOOK_TYPES];
         f.last_round_id = 0;
         f.latest = TruncatedReport::default();
         f.reentrancy_guard = false;
+
+        emit!(FeedAdminChanged {
+            feed_id,
+            old_admin: Pubkey::default(),
+            new_admin: feed_admin,
+            timestamp: Clock::get()?.unix_timestamp,
+        });
         Ok(())
     }
 
@@ -102,6 +110,22 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
     }
 
     // ---------- Admin ----------
+    // NEW: only current feed admin can change to a new admin
+    pub fn set_feed_admin(ctx: Context<AdminOnly>, new_admin: Pubkey) -> Result<()> {
+        let feed = &mut ctx.accounts.feed;
+        require!(ctx.accounts.admin.key() == feed.admin, ErrorCode::FeedAdminMismatch);
+        require!(new_admin != feed.admin, ErrorCode::FeedAdminNotChanged);
+        let old = feed.admin;
+        feed.admin = new_admin;
+        emit!(FeedAdminChanged {
+            feed_id: feed.feed_id,
+            old_admin: old,
+            new_admin,
+            timestamp: Clock::get()?.unix_timestamp,
+        });
+        Ok(())
+    }
+
     pub fn set_paused(ctx: Context<AdminOnly>, paused: bool) -> Result<()> {
         let feed = &mut ctx.accounts.feed;
         require!(ctx.accounts.admin.key() == feed.admin, ErrorCode::FeedAdminMismatch);
@@ -735,6 +759,14 @@ pub struct GlobalAdminChanged {
 }
 
 #[event]
+pub struct FeedAdminChanged {
+    pub feed_id: [u8; 32],
+    pub old_admin: Pubkey,
+    pub new_admin: Pubkey,
+    pub timestamp: i64,
+}
+
+#[event]
 pub struct ReportUpdated {
     pub feed_id: [u8; 32],
     pub updater: Pubkey,
@@ -847,4 +879,6 @@ pub enum ErrorCode {
     InvalidHistoryCapacity,
     #[msg("Global admin not changed")]
     GlobalAdminNotChanged,
+    #[msg("Feed admin not changed")]
+    FeedAdminNotChanged,
 }

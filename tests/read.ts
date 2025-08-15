@@ -9,7 +9,7 @@ import BN from "bn.js";
 configDotEnv();
 
 // ---------- Config ----------
-const PROGRAM_ID = new PublicKey("ALZsBRmiqqgKtZyFgNh9iumEaWk3qn3wsiiMJiMdbvMP");
+const PROGRAM_ID = new PublicKey("Et6bXECAiq9PH95uGwiAG4VyUUaD8JF4GZuCaduNBH9A");
 
 type Feed = {
     id: string;

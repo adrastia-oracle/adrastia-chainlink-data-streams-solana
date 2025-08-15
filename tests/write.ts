@@ -1,6 +1,6 @@
 import * as anchor from "@coral-xyz/anchor";
 import { Program, AnchorProvider } from "@coral-xyz/anchor";
-import { PublicKey } from "@solana/web3.js";
+import { PublicKey, SystemProgram } from "@solana/web3.js";
 import idl from "../target/idl/adrastia_chainlink_data_streams_feed_solana.json" with { type: "json" };
 import type { AdrastiaChainlinkDataStreamsFeedSolana } from "../target/types/adrastia_chainlink_data_streams_feed_solana.js";
 import * as snappy from "snappy";
@@ -46,13 +46,15 @@ const REPORT_TESTNET_ETHUSD_3 =
 
 // ---- IDs ----
 // Your program (this repo)
-const PROGRAM_ID = new PublicKey("ALZsBRmiqqgKtZyFgNh9iumEaWk3qn3wsiiMJiMdbvMP");
+const PROGRAM_ID = new PublicKey("Et6bXECAiq9PH95uGwiAG4VyUUaD8JF4GZuCaduNBH9A");
 
 const BOOTSTRAP_ADMIN = new PublicKey("634xiC5wufdbogSag2Q5koeRvJuUBQJ8vaU9j376oL2Q");
 
 // Chainlink Verifier tuple (use the right cluster values)
 const VERIFIER_PROGRAM_ID = new PublicKey("Gt9S41PtjR58CbG9JhJ3J6vxesqrNAswbWYbLNTMZA3c");
 const ACCESS_CONTROLLER = new PublicKey("2k3DsgwBoqrnvXKVvd7jX7aptNxdcRBdcd5HkYsGgbrb"); // devnet example
+
+const ZERO = PublicKey.default;
 
 // ---- Helpers ----
 const feedPda = (feedId: Uint8Array) =>
@@ -84,97 +86,128 @@ const bytes32 = (hex32: string) => {
     return u;
 };
 
-async function ensureFeedAndRing(
+// Sanity checker for ProgramConfig (tuple-in-config design)
+function needsTupleInit(cfg: any | null): boolean {
+    if (!cfg) return true; // no account
+    // If your ProgramConfig = { admin, verifierProgramId, verifierAccount, accessController }
+    // treat any zero key as "needs init"
+    return (
+        !cfg.verifierProgramId ||
+        (cfg.verifierProgramId as PublicKey).equals(ZERO) ||
+        !cfg.verifierAccount ||
+        (cfg.verifierAccount as PublicKey).equals(ZERO) ||
+        !cfg.accessController ||
+        (cfg.accessController as PublicKey).equals(ZERO)
+    );
+}
+
+/**
+ * Ensure ProgramConfig exists and carries a valid verifier tuple.
+ * For initProgramConfig: your on-chain handler must accept/record the tuple
+ * (either as accounts or args). This code assumes **accounts** style.
+ */
+export async function ensureProgramConfig(
+    program: Program<AdrastiaChainlinkDataStreamsFeedSolana>,
+    bootstrapAdmin: PublicKey, // signer that must equal GLOBAL_BOOTSTRAP_ADMIN
+    opts: {
+        verifierProgramId: PublicKey;
+        verifierAccount: PublicKey;
+        accessController: PublicKey;
+    },
+) {
+    const CONFIG = configPda();
+
+    // fetchNullable is cleaner than try/catch
+    const existing = await program.account.programConfig.fetchNullable(CONFIG);
+
+    if (needsTupleInit(existing)) {
+        console.log("Initializing ProgramConfig (or fixing empty tuple)...");
+        await program.methods
+            .initProgramConfig() // no args; handler reads tuple from accounts
+            .accountsPartial({
+                config: CONFIG,
+                admin: bootstrapAdmin,
+                payer: bootstrapAdmin,
+                verifierProgramId: opts.verifierProgramId, // passed as AccountInfo
+                verifierAccount: opts.verifierAccount,
+                accessController: opts.accessController,
+                systemProgram: SystemProgram.programId,
+            })
+            .rpc();
+        return;
+    }
+
+    // Optional: assert tuple matches expected
+    if (
+        !existing.verifierProgramId.equals(opts.verifierProgramId) ||
+        !existing.verifierAccount.equals(opts.verifierAccount) ||
+        !existing.accessController.equals(opts.accessController)
+    ) {
+        console.warn("ProgramConfig exists but tuple differs from provided values.");
+        // If you added a set_global_verifier_tuple() instruction, call it here.
+        // Otherwise, either accept chain’s tuple or migrate deliberately.
+    }
+}
+
+/**
+ * Ensure feed + ring exist (with fixed accounts lists).
+ */
+export async function ensureFeedAndRing(
     program: Program<AdrastiaChainlinkDataStreamsFeedSolana>,
     adminPubkey: PublicKey,
     feedId: Uint8Array,
     decimals: number,
     descriptionAscii32: Uint8Array,
 ) {
-    const config = configPda();
-    const feed = feedPda(feedId);
-    const ring = ringPda(feedId);
+    const CONFIG = configPda();
+    const FEED = feedPda(feedId);
+    const RING = ringPda(feedId);
 
-    let needsInitialConfig = false;
-    try {
-        await program.account.programConfig.fetch(config);
-    } catch {
-        needsInitialConfig = true;
-    }
-    if (needsInitialConfig) {
-        console.log("Initializing program config...");
-
-        await program.methods
-            .initProgramConfig()
-            .accountsPartial({
-                config: configPda(),
-                admin: BOOTSTRAP_ADMIN,
-                payer: adminPubkey,
-            })
-            .rpc();
+    // --- ProgramConfig presence/tuple sanity ---
+    const cfg = await program.account.programConfig.fetchNullable(CONFIG);
+    if (needsTupleInit(cfg)) {
+        throw new Error("ProgramConfig not initialized: call ensureProgramConfig() first.");
     }
 
-    // Quick existence checks (cheap & cheerful)
-    let needsFeed = false;
-    try {
-        await program.account.feed.fetch(feed);
-    } catch {
-        needsFeed = true;
-    }
-
-    if (needsFeed) {
-        console.log("Attempting to init feed...");
-
+    // --- Feed ---
+    const feedAcc = await program.account.feed.fetchNullable(FEED);
+    if (!feedAcc) {
+        console.log("Initializing feed...");
         await program.methods
             .initFeed(Array.from(feedId) as any, decimals, Array.from(descriptionAscii32) as any)
-            .accounts({
+            .accountsPartial({
+                // required by your InitFeed context:
+                config: CONFIG,
+                feed: FEED,
                 admin: adminPubkey,
-                verifierProgramId: VERIFIER_PROGRAM_ID,
-                verifierAccount: verifierPda(),
-                accessController: ACCESS_CONTROLLER,
                 payer: adminPubkey,
+                // If your older program version still required passing the tuple here,
+                // uncomment the next three lines:
+                // verifierProgramId: cfg.verifierProgramId,
+                // verifierAccount: cfg.verifierAccount,
+                // accessController: cfg.accessController,
+                systemProgram: SystemProgram.programId,
             })
             .rpc({ commitment: "confirmed" });
     }
 
-    let needsRing = false;
-    try {
-        await program.account.historyRing.fetch(ring);
-    } catch {
-        needsRing = true;
-    }
-
-    if (needsRing) {
-        console.log("Attempting to init history ring...");
-
-        const info = await program.provider.connection.getAccountInfo(ring);
-        console.log("Ring info:", {
-            ring: ring.toBase58(),
-            exists: !!info,
-            owner: info?.owner?.toBase58(),
-            len: info?.data.length,
-        });
-
-        const space = 8 + 64 + 512 * 48;
-        const rent = await program.provider.connection.getMinimumBalanceForRentExemption(space);
-        console.log("Estimated rent:", { space, rent });
-
-        const currentLamports = await program.provider.connection.getBalance(adminPubkey);
-        console.log("Current lamports:", { currentLamports });
-
+    // --- History ring ---
+    const ringAcc = await program.account.historyRing.fetchNullable(RING);
+    if (!ringAcc) {
+        console.log("Initializing history ring...");
         await program.methods
             .initHistoryRing(Array.from(feedId) as any)
             .accountsPartial({
-                feed,
-                historyRing: ring,
+                feed: FEED,
+                historyRing: RING,
                 admin: adminPubkey,
                 payer: adminPubkey,
-                systemProgram: anchor.web3.SystemProgram.programId,
+                systemProgram: SystemProgram.programId,
             })
             .rpc({ commitment: "confirmed" });
     }
 
-    return { feed, ring };
+    return { feed: FEED, ring: RING };
 }
 
 async function main() {
@@ -191,7 +224,7 @@ async function main() {
     // Example inputs (edit these)
     // -------------------------------
     const feedMetadata = FEED_TESTNET_ETHUSD;
-    const feedReport = REPORT_TESTNET_ETHUSD_2;
+    const feedReport = REPORT_TESTNET_ETHUSD_1;
 
     const feedId = bytes32(feedMetadata.id);
     const decimals = feedMetadata.decimals;
@@ -213,7 +246,12 @@ async function main() {
     console.log("Config PDA:", CONFIG_ACCOUNT.toBase58());
 
     // Ensure feed + history ring exist
-    const { feed, ring } = await ensureFeedAndRing(program, provider.wallet.publicKey, feedId, decimals, description);
+    await ensureProgramConfig(program, BOOTSTRAP_ADMIN, {
+        verifierProgramId: VERIFIER_PROGRAM_ID,
+        verifierAccount: VERIFIER_ACCOUNT,
+        accessController: ACCESS_CONTROLLER,
+    });
+    await ensureFeedAndRing(program, provider.wallet.publicKey, feedId, decimals, description);
 
     try {
         console.log("\n📝 Transaction Details");
@@ -227,7 +265,7 @@ async function main() {
                 verifierAccount: VERIFIER_ACCOUNT,
                 accessController: ACCESS_CONTROLLER,
                 user: provider.wallet.publicKey,
-                configAccount: CONFIG_ACCOUNT,
+                verifierConfigAccount: CONFIG_ACCOUNT,
             })
             .rpc({ commitment: "confirmed" });
 

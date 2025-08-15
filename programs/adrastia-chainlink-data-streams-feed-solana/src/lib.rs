@@ -16,7 +16,7 @@ use chainlink_data_streams_report::report::{
 };
 use num_traits::cast::ToPrimitive;
 
-declare_id!("ALZsBRmiqqgKtZyFgNh9iumEaWk3qn3wsiiMJiMdbvMP");
+declare_id!("Et6bXECAiq9PH95uGwiAG4VyUUaD8JF4GZuCaduNBH9A");
 
 // ⚠️ REPLACE BEFORE DEPLOY: only this signer can run `init_program_config` once.
 pub const GLOBAL_BOOTSTRAP_ADMIN: Pubkey = pubkey!("634xiC5wufdbogSag2Q5koeRvJuUBQJ8vaU9j376oL2Q");
@@ -31,9 +31,21 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
     use super::*;
 
     // ---------- One-time program bootstrap ----------
+    // Stores global admin + verifier tuple.
     pub fn init_program_config(ctx: Context<InitProgramConfig>) -> Result<()> {
         require!(ctx.accounts.admin.key() == GLOBAL_BOOTSTRAP_ADMIN, ErrorCode::UnauthorizedAdmin);
-        ctx.accounts.config.admin = ctx.accounts.admin.key();
+
+        require!(ctx.accounts.verifier_program_id.executable, ErrorCode::BadVerifierProgram);
+        require!(
+            *ctx.accounts.verifier_account.owner == ctx.accounts.verifier_program_id.key(),
+            ErrorCode::BadVerifierAccountOwner
+        );
+
+        let cfg = &mut ctx.accounts.config;
+        cfg.admin = ctx.accounts.admin.key();
+        cfg.verifier_program_id = ctx.accounts.verifier_program_id.key();
+        cfg.verifier_account = ctx.accounts.verifier_account.key();
+        cfg.access_controller = ctx.accounts.access_controller.key();
         Ok(())
     }
 
@@ -61,13 +73,6 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
         // Only the current global admin (stored in ProgramConfig) can initialize feeds.
         require!(ctx.accounts.admin.key() == ctx.accounts.config.admin, ErrorCode::GlobalAdminMismatch);
 
-        // Verifier tuple basic checks
-        require!(ctx.accounts.verifier_program_id.executable, ErrorCode::BadVerifierProgram);
-        require!(
-            *ctx.accounts.verifier_account.owner == ctx.accounts.verifier_program_id.key(),
-            ErrorCode::BadVerifierAccountOwner
-        );
-
         let f = &mut ctx.accounts.feed;
         f.feed_id = feed_id;
         f.decimals = decimals;
@@ -76,9 +81,6 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
         f.paused = false;
         f.active_hook_types = 0;
         f.hooks = [Hook::default(); MAX_HOOK_TYPES];
-        f.verifier_program_id = ctx.accounts.verifier_program_id.key();
-        f.verifier_account = ctx.accounts.verifier_account.key();
-        f.access_controller = ctx.accounts.access_controller.key();
         f.last_round_id = 0;
         f.latest = TruncatedReport::default();
         f.reentrancy_guard = false;
@@ -86,7 +88,7 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
     }
 
     pub fn init_history_ring(ctx: Context<InitHistoryRing>, feed_id: [u8; 32]) -> Result<()> {
-        // Only the feed’s admin can (re)run this (account is `init`, so it can't re-init anyway).
+        // Only the feed’s admin can run this (account is `init`, so it can't re-init anyway).
         require!(ctx.accounts.admin.key() == ctx.accounts.feed.admin, ErrorCode::FeedAdminMismatch);
 
         let mut ring = ctx.accounts.history_ring.load_init()?;
@@ -163,14 +165,15 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
         signed_report: Vec<u8>
     ) -> Result<()> {
         let feed = &mut ctx.accounts.feed;
+        let cfg = &ctx.accounts.config;
 
-        // Admin pause + tuple checks (with logs for quick diagnosis)
+        // Admin pause + tuple checks (now pinned against global config)
         require!(!feed.paused, ErrorCode::UpdatesPaused);
-        require!(ctx.accounts.verifier_program_id.key() == feed.verifier_program_id, ErrorCode::BadVerifierProgram);
-        require!(ctx.accounts.verifier_account.key() == feed.verifier_account, ErrorCode::BadVerifierAccount);
-        require!(ctx.accounts.access_controller.key() == feed.access_controller, ErrorCode::BadAccessController);
+        require!(ctx.accounts.verifier_program_id.key() == cfg.verifier_program_id, ErrorCode::BadVerifierProgram);
+        require!(ctx.accounts.verifier_account.key() == cfg.verifier_account, ErrorCode::BadVerifierAccount);
+        require!(ctx.accounts.access_controller.key() == cfg.access_controller, ErrorCode::BadAccessController);
         require!(ctx.accounts.verifier_program_id.executable, ErrorCode::BadVerifierProgram);
-        require!(*ctx.accounts.verifier_account.owner == feed.verifier_program_id, ErrorCode::BadVerifierAccountOwner);
+        require!(*ctx.accounts.verifier_account.owner == cfg.verifier_program_id, ErrorCode::BadVerifierAccountOwner);
 
         // --- Reentrancy guard: set before any CPI out of this program ---
         require!(!feed.reentrancy_guard, ErrorCode::Reentrancy);
@@ -182,10 +185,9 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
             &ctx.accounts.verifier_account.key(),
             &ctx.accounts.access_controller.key(),
             &ctx.accounts.user.key(),
-            &ctx.accounts.config_account.key(),
+            &ctx.accounts.verifier_config_account.key(), // external verifier config PDA
             signed_report
         );
-        // Only pass the accounts that belong to the verifier program/user/config
         if
             let Err(_) = invoke(
                 &ix,
@@ -193,16 +195,15 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
                     ctx.accounts.verifier_account.to_account_info(),
                     ctx.accounts.access_controller.to_account_info(),
                     ctx.accounts.user.to_account_info(),
-                    ctx.accounts.config_account.to_account_info(),
+                    ctx.accounts.verifier_config_account.to_account_info(),
                 ]
             )
         {
-            // Re-entrancy flag will roll back on error, but log for clarity
             return Err(error!(ErrorCode::VerifierCpiFailed));
         }
 
         // Return-data binding + decode (version-aware, based on Chainlink layout)
-        let (pid, ret) = get_return_data().ok_or_else(|| { error!(ErrorCode::BadVerifierReturnData) })?;
+        let (pid, ret) = get_return_data().ok_or_else(|| error!(ErrorCode::BadVerifierReturnData))?;
         require!(pid == ctx.accounts.verifier_program_id.key(), ErrorCode::BadVerifierProgram);
 
         // feed_id is the first 32 bytes; version is the first 2 bytes of feed_id (big-endian)
@@ -233,8 +234,8 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
 
         // PRE-HOOK
         if is_hook_set(feed.active_hook_types, HookType::PreUpdate) {
-            let cfg = feed.hooks[HookType::PreUpdate as usize];
-            if cfg.program != Pubkey::default() {
+            let hcfg = feed.hooks[HookType::PreUpdate as usize];
+            if hcfg.program != Pubkey::default() {
                 let payload = HookPayload {
                     feed_id,
                     round_id: new_round_id,
@@ -242,16 +243,15 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
                     observation_timestamp: report.observations_timestamp,
                     storage_timestamp: now,
                 };
-                if let Err(e) = invoke_hook(cfg.program, 0, &payload) {
-                    if cfg.allow_failure {
+                if let Err(e) = invoke_hook(hcfg.program, 0, &payload) {
+                    if hcfg.allow_failure {
                         emit!(HookFailed {
                             hook_type: HookType::PreUpdate as u8,
-                            program: cfg.program,
+                            program: hcfg.program,
                             reason_code: hook_error_code(e.into()),
                             timestamp: now,
                         });
                     } else {
-                        // guard resets on revert; just bubble
                         return Err(e);
                     }
                 }
@@ -306,8 +306,8 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
 
         // POST-HOOK
         if is_hook_set(feed.active_hook_types, HookType::PostUpdate) {
-            let cfg = feed.hooks[HookType::PostUpdate as usize];
-            if cfg.program != Pubkey::default() {
+            let hcfg = feed.hooks[HookType::PostUpdate as usize];
+            if hcfg.program != Pubkey::default() {
                 let payload = HookPayload {
                     feed_id,
                     round_id: new_round_id,
@@ -315,11 +315,11 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
                     observation_timestamp: rec.observation_timestamp,
                     storage_timestamp: now,
                 };
-                if let Err(e) = invoke_hook(cfg.program, 1, &payload) {
-                    if cfg.allow_failure {
+                if let Err(e) = invoke_hook(hcfg.program, 1, &payload) {
+                    if hcfg.allow_failure {
                         emit!(HookFailed {
                             hook_type: HookType::PostUpdate as u8,
-                            program: cfg.program,
+                            program: hcfg.program,
                             reason_code: hook_error_code(e.into()),
                             timestamp: now,
                         });
@@ -419,17 +419,13 @@ pub struct Feed {
     pub paused: bool,
     pub active_hook_types: u16,
     pub hooks: [Hook; MAX_HOOK_TYPES],
-    pub verifier_program_id: Pubkey,
-    pub verifier_account: Pubkey,
-    pub access_controller: Pubkey,
     pub last_round_id: u64,
     pub latest: TruncatedReport,
     // Reentrancy guard (true while inside verify_and_update_report)
     pub reentrancy_guard: bool,
 }
 impl Feed {
-    pub const SIZE: usize =
-        32 + 1 + 32 + 32 + 1 + 2 + Hook::SIZE * MAX_HOOK_TYPES + 32 + 32 + 32 + 8 + TruncatedReport::SIZE + 1; // reentrancy_guard
+    pub const SIZE: usize = 32 + 1 + 32 + 32 + 1 + 2 + Hook::SIZE * MAX_HOOK_TYPES + 8 + TruncatedReport::SIZE + 1;
 }
 
 #[derive(Clone, Copy)]
@@ -604,9 +600,12 @@ fn decode_report_by_version(ret: &[u8], version: u16) -> Result<NormalizedReport
 #[account]
 pub struct ProgramConfig {
     pub admin: Pubkey,
+    pub verifier_program_id: Pubkey,
+    pub verifier_account: Pubkey,
+    pub access_controller: Pubkey,
 }
 impl ProgramConfig {
-    pub const SIZE: usize = 32;
+    pub const SIZE: usize = 32 + 32 + 32 + 32;
 }
 
 // No-accounts context (for version()).
@@ -621,6 +620,13 @@ pub struct InitProgramConfig<'info> {
     /// Must equal GLOBAL_BOOTSTRAP_ADMIN.
     pub admin: Signer<'info>,
 
+    /// CHECK: verified executable at runtime
+    pub verifier_program_id: AccountInfo<'info>,
+    /// CHECK: owner checked at runtime
+    pub verifier_account: AccountInfo<'info>,
+    /// CHECK: optional invariant in handler
+    pub access_controller: AccountInfo<'info>,
+
     #[account(mut)]
     pub payer: Signer<'info>,
     pub system_program: Program<'info, System>,
@@ -628,11 +634,7 @@ pub struct InitProgramConfig<'info> {
 
 #[derive(Accounts)]
 pub struct SetGlobalAdmin<'info> {
-    #[account(
-        mut,
-        seeds = [b"config".as_ref()],
-        bump
-    )]
+    #[account(mut, seeds = [b"config".as_ref()], bump)]
     pub config: Account<'info, ProgramConfig>,
 
     /// Current global admin.
@@ -650,13 +652,6 @@ pub struct InitFeed<'info> {
     pub feed: Account<'info, Feed>,
 
     pub admin: Signer<'info>, // must equal config.admin
-
-    /// CHECK: executable checked at runtime
-    pub verifier_program_id: AccountInfo<'info>,
-    /// CHECK: owner checked at runtime
-    pub verifier_account: AccountInfo<'info>,
-    /// CHECK: optional invariant in handler
-    pub access_controller: AccountInfo<'info>,
 
     #[account(mut)]
     pub payer: Signer<'info>,
@@ -717,8 +712,13 @@ pub struct UpdateFromReport<'info> {
     /// CHECK: validated in handler
     pub access_controller: AccountInfo<'info>,
     pub user: Signer<'info>,
-    /// CHECK: owner checked optionally in handler
-    pub config_account: UncheckedAccount<'info>,
+    /// CHECK: external verifier config PDA (passed through to CPI)
+    pub verifier_config_account: UncheckedAccount<'info>,
+
+    // Our global program config (stores the expected verifier tuple)
+    #[account(seeds = [b"config".as_ref()], bump)]
+    pub config: Account<'info, ProgramConfig>,
+
     #[account(mut, seeds = [b"feed".as_ref(), feed_id.as_ref()], bump)]
     pub feed: Account<'info, Feed>,
     #[account(mut, seeds = [b"ring".as_ref(), feed_id.as_ref()], bump)]

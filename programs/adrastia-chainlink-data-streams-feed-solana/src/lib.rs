@@ -38,7 +38,7 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
         emit!(GlobalAdminChanged {
             old_admin: ctx.accounts.config.admin,
             new_admin,
-            timestamp: Clock::get()?.unix_timestamp as u64,
+            timestamp: Clock::get()?.unix_timestamp,
         });
         Ok(())
     }
@@ -100,7 +100,7 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
         emit!(PauseStatusChanged {
             caller: ctx.accounts.admin.key(),
             paused,
-            timestamp: Clock::get()?.unix_timestamp as u64,
+            timestamp: Clock::get()?.unix_timestamp,
         });
         Ok(())
     }
@@ -130,7 +130,7 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
             old_program: old.program,
             new_allow_failure: cfg.allow_failure,
             new_program: cfg.program,
-            timestamp: Clock::get()?.unix_timestamp as u64,
+            timestamp: Clock::get()?.unix_timestamp,
         });
         Ok(())
     }
@@ -206,23 +206,23 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
         let report = decode_report_by_version(&ret, version)?;
         require!(report.feed_id == FeedId(feed_id), ErrorCode::FeedMismatch);
 
-        let now = Clock::get()?.unix_timestamp as i64;
+        let now = Clock::get()?.unix_timestamp;
         require!(report.observations_timestamp != 0, ErrorCode::InvalidReport);
-        require!(now >= (report.observations_timestamp as i64), ErrorCode::ObservationInFuture);
-        require!(now >= (report.valid_from_timestamp as i64), ErrorCode::ReportNotValidYet);
-        require!(now < (report.expires_at as i64), ErrorCode::ReportExpired);
+        require!(now >= report.observations_timestamp, ErrorCode::ObservationInFuture);
+        require!(now >= report.valid_from_timestamp, ErrorCode::ReportNotValidYet);
+        require!(now < report.expires_at, ErrorCode::ReportExpired);
 
         let last = feed.latest;
         if last.round_id != 0 {
             require!(
                 !(
                     report.price_i128 == last.price &&
-                    report.observations_timestamp == (last.observation_timestamp as u32) &&
-                    report.expires_at == (last.expires_at as u32)
+                    report.observations_timestamp == last.observation_timestamp &&
+                    report.expires_at == last.expires_at
                 ),
                 ErrorCode::DuplicateReport
             );
-            require!((report.observations_timestamp as i64) > last.observation_timestamp, ErrorCode::StaleReport);
+            require!(report.observations_timestamp > last.observation_timestamp, ErrorCode::StaleReport);
         }
 
         // New round id
@@ -236,9 +236,9 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
                     feed_id,
                     round_id: new_round_id,
                     price: report.price_i128,
-                    observation_timestamp: report.observations_timestamp as i64,
-                    expires_at: report.expires_at as u64,
-                    storage_timestamp: now as u64,
+                    observation_timestamp: report.observations_timestamp,
+                    expires_at: report.expires_at,
+                    storage_timestamp: now,
                 };
                 if let Err(e) = invoke_hook(cfg.program, 0, &payload) {
                     if cfg.allow_failure {
@@ -246,7 +246,7 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
                             hook_type: HookType::PreUpdate as u8,
                             program: cfg.program,
                             reason_code: hook_error_code(e.into()),
-                            timestamp: now as u64,
+                            timestamp: now,
                         });
                     } else {
                         // guard resets on revert; just bubble
@@ -266,8 +266,8 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
             let idx = (w % cap) as usize;
             ring.records[idx] = RoundRecord {
                 price: report.price_i128,
-                observation_timestamp: report.observations_timestamp as i64,
-                expires_at: report.expires_at as i64,
+                observation_timestamp: report.observations_timestamp,
+                expires_at: report.expires_at,
                 storage_timestamp: now,
                 round_id: new_round_id,
             };
@@ -285,8 +285,8 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
         // Update latest in feed
         let rec = TruncatedReport {
             price: report.price_i128,
-            observation_timestamp: report.observations_timestamp as i64,
-            expires_at: report.expires_at as i64,
+            observation_timestamp: report.observations_timestamp,
+            expires_at: report.expires_at,
             storage_timestamp: now,
             round_id: new_round_id,
         };
@@ -298,10 +298,10 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
             updater: ctx.accounts.user.key(),
             round_id: new_round_id,
             price: rec.price,
-            valid_from_timestamp: report.valid_from_timestamp as u64,
-            observations_timestamp: rec.observation_timestamp as u64,
-            expires_at: rec.expires_at as u64,
-            timestamp: now as u64,
+            valid_from_timestamp: report.valid_from_timestamp,
+            observations_timestamp: rec.observation_timestamp,
+            expires_at: rec.expires_at,
+            timestamp: now,
         });
 
         // POST-HOOK
@@ -313,8 +313,8 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
                     round_id: new_round_id,
                     price: rec.price,
                     observation_timestamp: rec.observation_timestamp,
-                    expires_at: rec.expires_at as u64,
-                    storage_timestamp: now as u64,
+                    expires_at: rec.expires_at,
+                    storage_timestamp: now,
                 };
                 if let Err(e) = invoke_hook(cfg.program, 1, &payload) {
                     if cfg.allow_failure {
@@ -322,7 +322,7 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
                             hook_type: HookType::PostUpdate as u8,
                             program: cfg.program,
                             reason_code: hook_error_code(e.into()),
-                            timestamp: now as u64,
+                            timestamp: now,
                         });
                     } else {
                         return Err(e);
@@ -341,7 +341,7 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
         let feed = &ctx.accounts.feed;
         require!(feed.last_round_id != 0, ErrorCode::MissingReport);
         let latest = feed.latest;
-        let now = Clock::get()?.unix_timestamp as i64;
+        let now = Clock::get()?.unix_timestamp;
         require!(now < latest.expires_at, ErrorCode::ReportExpired);
         let out = LatestRoundData {
             round_id: latest.round_id,
@@ -439,9 +439,9 @@ impl Feed {
 struct NormalizedReport {
     feed_id: FeedId,
     price_i128: i128,
-    valid_from_timestamp: u32,
-    observations_timestamp: u32,
-    expires_at: u32,
+    valid_from_timestamp: i64,
+    observations_timestamp: i64,
+    expires_at: i64,
 }
 
 #[account(zero_copy)]
@@ -517,8 +517,8 @@ pub struct HookPayload {
     pub round_id: u64,
     pub price: i128,
     pub observation_timestamp: i64,
-    pub expires_at: u64,
-    pub storage_timestamp: u64,
+    pub expires_at: i64,
+    pub storage_timestamp: i64,
 }
 
 fn invoke_hook(program_id: Pubkey, disc: u8, payload: &HookPayload) -> Result<()> {
@@ -557,9 +557,9 @@ fn decode_report_by_version(ret: &[u8], version: u16) -> Result<NormalizedReport
             Ok(NormalizedReport {
                 feed_id: r.feed_id,
                 price_i128: price,
-                valid_from_timestamp: r.valid_from_timestamp,
-                observations_timestamp: r.observations_timestamp,
-                expires_at: r.expires_at,
+                valid_from_timestamp: r.valid_from_timestamp as i64,
+                observations_timestamp: r.observations_timestamp as i64,
+                expires_at: r.expires_at as i64,
             })
         }
         3 => {
@@ -568,9 +568,9 @@ fn decode_report_by_version(ret: &[u8], version: u16) -> Result<NormalizedReport
             Ok(NormalizedReport {
                 feed_id: r.feed_id,
                 price_i128: price,
-                valid_from_timestamp: r.valid_from_timestamp,
-                observations_timestamp: r.observations_timestamp,
-                expires_at: r.expires_at,
+                valid_from_timestamp: r.valid_from_timestamp as i64,
+                observations_timestamp: r.observations_timestamp as i64,
+                expires_at: r.expires_at as i64,
             })
         }
         2 => {
@@ -579,9 +579,9 @@ fn decode_report_by_version(ret: &[u8], version: u16) -> Result<NormalizedReport
             Ok(NormalizedReport {
                 feed_id: r.feed_id,
                 price_i128: price,
-                valid_from_timestamp: r.valid_from_timestamp,
-                observations_timestamp: r.observations_timestamp,
-                expires_at: r.expires_at,
+                valid_from_timestamp: r.valid_from_timestamp as i64,
+                observations_timestamp: r.observations_timestamp as i64,
+                expires_at: r.expires_at as i64,
             })
         }
         _ => Err(error!(ErrorCode::InvalidReportVersion)),
@@ -733,7 +733,7 @@ pub struct UpdateFromReport<'info> {
 pub struct GlobalAdminChanged {
     pub old_admin: Pubkey,
     pub new_admin: Pubkey,
-    pub timestamp: u64,
+    pub timestamp: i64,
 }
 
 #[event]
@@ -742,17 +742,17 @@ pub struct ReportUpdated {
     pub updater: Pubkey,
     pub round_id: u64,
     pub price: i128,
-    pub valid_from_timestamp: u64,
-    pub observations_timestamp: u64,
-    pub expires_at: u64,
-    pub timestamp: u64,
+    pub valid_from_timestamp: i64,
+    pub observations_timestamp: i64,
+    pub expires_at: i64,
+    pub timestamp: i64,
 }
 
 #[event]
 pub struct PauseStatusChanged {
     pub caller: Pubkey,
     pub paused: bool,
-    pub timestamp: u64,
+    pub timestamp: i64,
 }
 
 #[event]
@@ -760,7 +760,7 @@ pub struct HookFailed {
     pub hook_type: u8,
     pub program: Pubkey,
     pub reason_code: u32,
-    pub timestamp: u64,
+    pub timestamp: i64,
 }
 
 #[event]
@@ -771,7 +771,7 @@ pub struct HookConfigUpdated {
     pub old_program: Pubkey,
     pub new_allow_failure: bool,
     pub new_program: Pubkey,
-    pub timestamp: u64,
+    pub timestamp: i64,
 }
 
 // ---------- Errors ----------

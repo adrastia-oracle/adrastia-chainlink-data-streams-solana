@@ -17,8 +17,8 @@ no-log-ix-name = []
 idl-build = ["anchor-lang/idl-build"]
 
 [dependencies]
-chainlink_solana_data_streams = { git = "https://github.com/adrastia-oracle/chainlink-solana", branch = "adrastia/solana-2.1", subdir = "contracts/crates/chainlink-solana-data-streams" }
-data-streams-report = { git = "https://github.com/smartcontractkit/data-streams-sdk", package = "chainlink-data-streams-report", subdir = "rust/crates/report" }
+chainlink_solana_data_streams = { git = "https://github.com/smartcontractkit/chainlink-data-streams-solana" }
+chainlink-data-streams-report = { version = "1.0.3" }
 
 # Additional required dependencies
 anchor-lang = { version = "0.31.1", features = ["init-if-needed"] }

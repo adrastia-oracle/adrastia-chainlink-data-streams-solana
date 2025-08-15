@@ -587,7 +587,8 @@ dependencies = [
 [[package]]
 name = "chainlink-data-streams-report"
 version = "1.0.3"
-source = "git+https://github.com/smartcontractkit/data-streams-sdk#b271d52a83a927b1777877885d55472d705a3e84"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "35e670ff5a12a6b7f00ce20d69f7743c394417798824c48cd3dc185600287f00"
 dependencies = [
  "hex",
  "num-bigint",
@@ -599,8 +600,8 @@ dependencies = [
 
 [[package]]
 name = "chainlink_solana_data_streams"
-version = "1.0.0"
-source = "git+https://github.com/adrastia-oracle/chainlink-solana?branch=adrastia%2Fsolana-2.1#31359da8c108c3eedc301c90fed4f1f49ee01b7e"
+version = "1.1.0"
+source = "git+https://github.com/smartcontractkit/chainlink-data-streams-solana#893d2340254935fb947c95b6aa8e9e245c65ddc4"
 dependencies = [
  "borsh 0.10.4",
  "solana-program",

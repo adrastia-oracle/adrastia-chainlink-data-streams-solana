@@ -6,8 +6,8 @@ use anchor_lang::solana_program::{
     pubkey,
 };
 use chainlink_solana_data_streams::VerifierInstructions;
-use data_streams_report::feed_id::ID as FeedId;
-use data_streams_report::report::{
+use chainlink_data_streams_report::feed_id::ID as FeedId;
+use chainlink_data_streams_report::report::{
     v2::ReportDataV2,
     v3::ReportDataV3,
     v4::ReportDataV4,

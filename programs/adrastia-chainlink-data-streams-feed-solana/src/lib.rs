@@ -7,7 +7,13 @@ use anchor_lang::solana_program::{
 };
 use chainlink_solana_data_streams::VerifierInstructions;
 use data_streams_report::feed_id::ID as FeedId;
-use data_streams_report::report::{ v2::ReportDataV2, v3::ReportDataV3, v4::ReportDataV4 };
+use data_streams_report::report::{
+    v2::ReportDataV2,
+    v3::ReportDataV3,
+    v4::ReportDataV4,
+    v7::ReportDataV7,
+    v8::ReportDataV8,
+};
 use num_traits::cast::ToPrimitive;
 
 declare_id!("Cwpu7Mkico7d873oUZmTpCvkxuFjNX1bGmhWFfxbByta");
@@ -537,6 +543,26 @@ fn parse_header(ret: &[u8]) -> Result<(u16, [u8; 32])> {
 
 fn decode_report_by_version(ret: &[u8], version: u16) -> Result<NormalizedReport> {
     match version {
+        8 => {
+            let r = ReportDataV8::decode(ret).map_err(|_| error!(ErrorCode::InvalidV8Report))?;
+            let price = r.mid_price.to_i128().ok_or(error!(ErrorCode::InvalidV8Report))?;
+            Ok(NormalizedReport {
+                feed_id: r.feed_id,
+                price_i128: price,
+                valid_from_timestamp: r.valid_from_timestamp as i64,
+                observations_timestamp: r.observations_timestamp as i64,
+            })
+        }
+        7 => {
+            let r = ReportDataV7::decode(ret).map_err(|_| error!(ErrorCode::InvalidV7Report))?;
+            let price = r.exchange_rate.to_i128().ok_or(error!(ErrorCode::InvalidV7Report))?;
+            Ok(NormalizedReport {
+                feed_id: r.feed_id,
+                price_i128: price,
+                valid_from_timestamp: r.valid_from_timestamp as i64,
+                observations_timestamp: r.observations_timestamp as i64,
+            })
+        }
         4 => {
             let r = ReportDataV4::decode(ret).map_err(|_| error!(ErrorCode::InvalidV4Report))?;
             let price = r.price.to_i128().ok_or(error!(ErrorCode::InvalidV4Report))?;
@@ -822,6 +848,10 @@ pub enum ErrorCode {
     InvalidV3Report,
     #[msg("Invalid V4 report data")]
     InvalidV4Report,
+    #[msg("Invalid V7 report data")]
+    InvalidV7Report,
+    #[msg("Invalid V8 report data")]
+    InvalidV8Report,
     #[msg("Reentrancy detected")]
     Reentrancy,
     #[msg("Invalid history capacity")]

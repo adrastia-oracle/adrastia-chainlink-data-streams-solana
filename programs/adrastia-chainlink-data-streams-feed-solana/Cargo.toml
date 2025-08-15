@@ -6,7 +6,6 @@ edition = "2021"
 
 [lib]
 crate-type = ["cdylib", "lib"]
-name = "adrastia_chainlink_data_streams_feed_solana"
 
 [features]
 default = []

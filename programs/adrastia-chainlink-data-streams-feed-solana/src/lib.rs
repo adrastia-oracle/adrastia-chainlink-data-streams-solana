@@ -47,6 +47,11 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
         cfg.verifier_program_id = ctx.accounts.verifier_program_id.key();
         cfg.verifier_account = ctx.accounts.verifier_account.key();
         cfg.access_controller = ctx.accounts.access_controller.key();
+        emit!(GlobalAdminChanged {
+            old_admin: Pubkey::default(),
+            new_admin: ctx.accounts.admin.key(),
+            timestamp: Clock::get()?.unix_timestamp,
+        });
         Ok(())
     }
 

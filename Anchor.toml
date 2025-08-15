@@ -8,10 +8,10 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-adrastia_chainlink_data_streams_feed_solana = "ALZsBRmiqqgKtZyFgNh9iumEaWk3qn3wsiiMJiMdbvMP"
+adrastia_chainlink_data_streams_feed_solana = "Et6bXECAiq9PH95uGwiAG4VyUUaD8JF4GZuCaduNBH9A"
 
 [programs.devnet]
-adrastia_chainlink_data_streams_feed_solana = "ALZsBRmiqqgKtZyFgNh9iumEaWk3qn3wsiiMJiMdbvMP"
+adrastia_chainlink_data_streams_feed_solana = "Et6bXECAiq9PH95uGwiAG4VyUUaD8JF4GZuCaduNBH9A"
 
 [registry]
 url = "https://api.apr.dev"

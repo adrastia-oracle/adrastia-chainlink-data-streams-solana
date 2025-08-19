@@ -28,6 +28,12 @@ const FEED_TESTNET_ETHUSD: Feed = {
     desc: "ETH/USD",
 };
 
+const FEED_TESTNET_WBTC: Feed = {
+    id: "0x0003986bae710e410e6a6ec824db9ac91f97f6dd47fc5b28d028c14e825c5891",
+    decimals: 18,
+    desc: "wBTC/USD",
+};
+
 // ---- Reports ----
 
 const REPORT_TESTNET_BTCUSD_1 =
@@ -179,6 +185,7 @@ export async function ensureFeedAndRing(
                 // required by your InitFeed context:
                 config: CONFIG,
                 feed: FEED,
+                historyRing: RING,
                 admin: adminPubkey,
                 payer: adminPubkey,
                 // If your older program version still required passing the tuple here,
@@ -186,22 +193,6 @@ export async function ensureFeedAndRing(
                 // verifierProgramId: cfg.verifierProgramId,
                 // verifierAccount: cfg.verifierAccount,
                 // accessController: cfg.accessController,
-                systemProgram: SystemProgram.programId,
-            })
-            .rpc({ commitment: "confirmed" });
-    }
-
-    // --- History ring ---
-    const ringAcc = await program.account.historyRing.fetchNullable(RING);
-    if (!ringAcc) {
-        console.log("Initializing history ring...");
-        await program.methods
-            .initHistoryRing(Array.from(feedId) as any)
-            .accountsPartial({
-                feed: FEED,
-                historyRing: RING,
-                admin: adminPubkey,
-                payer: adminPubkey,
                 systemProgram: SystemProgram.programId,
             })
             .rpc({ commitment: "confirmed" });
@@ -223,27 +214,15 @@ async function main() {
     // -------------------------------
     // Example inputs (edit these)
     // -------------------------------
-    const feedMetadata = FEED_TESTNET_ETHUSD;
-    const feedReport = REPORT_TESTNET_ETHUSD_1;
+    const feedMetadata = FEED_TESTNET_WBTC;
+    const feedReport = undefined;
 
     const feedId = bytes32(feedMetadata.id);
     const decimals = feedMetadata.decimals;
     const description = ascii32(feedMetadata.desc);
 
-    const signedReport = hexToU8a(feedReport);
-
-    // The Verifier expects the signed report to be snappy-compressed
-    const compressedReport = await snappy.compress(Buffer.from(signedReport));
-
-    // Derive Verifier state PDA (“verifier”) and config PDA from the report’s first 32 bytes
+    // Derive Verifier PDA
     const VERIFIER_ACCOUNT = verifierPda();
-    const CONFIG_ACCOUNT = PublicKey.findProgramAddressSync(
-        [signedReport.slice(0, 32)], // uncompressed slice
-        VERIFIER_PROGRAM_ID,
-    )[0];
-
-    console.log("Verifier PDA:", VERIFIER_ACCOUNT.toBase58());
-    console.log("Config PDA:", CONFIG_ACCOUNT.toBase58());
 
     // Ensure feed + history ring exist
     await ensureProgramConfig(program, BOOTSTRAP_ADMIN, {
@@ -252,6 +231,21 @@ async function main() {
         accessController: ACCESS_CONTROLLER,
     });
     await ensureFeedAndRing(program, provider.wallet.publicKey, feedId, decimals, description);
+
+    if (!feedReport) {
+        return;
+    }
+
+    const signedReport = hexToU8a(feedReport);
+
+    // The Verifier expects the signed report to be snappy-compressed
+    const compressedReport = await snappy.compress(Buffer.from(signedReport));
+
+    // Derive config PDA from the report’s first 32 bytes
+    const CONFIG_ACCOUNT = PublicKey.findProgramAddressSync(
+        [signedReport.slice(0, 32)], // uncompressed slice
+        VERIFIER_PROGRAM_ID,
+    )[0];
 
     try {
         console.log("\n📝 Transaction Details");

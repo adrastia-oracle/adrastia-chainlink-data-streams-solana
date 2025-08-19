@@ -98,6 +98,7 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
         require!(ctx.accounts.admin.key() == ctx.accounts.config.admin, ErrorCode::GlobalAdminMismatch);
         require!(feed_admin != Pubkey::default(), ErrorCode::AdminCannotBeZero);
 
+        // --- Init Feed ---
         let f = &mut ctx.accounts.feed;
         f.feed_id = feed_id;
         f.decimals = decimals;
@@ -116,20 +117,17 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
             new_admin: feed_admin,
             timestamp: Clock::get()?.unix_timestamp,
         });
-        Ok(())
-    }
 
-    pub fn init_history_ring(ctx: Context<InitHistoryRing>, feed_id: [u8; 32]) -> Result<()> {
-        // Only the feed’s admin can run this (account is `init`, so it can't re-init anyway).
-        require!(ctx.accounts.admin.key() == ctx.accounts.feed.admin, ErrorCode::FeedAdminMismatch);
-
+        // --- Init History Ring ---
         let mut ring = ctx.accounts.history_ring.load_init()?;
         ring.feed_id = feed_id;
         require!(HISTORY_CAPACITY > 0, ErrorCode::InvalidHistoryCapacity);
         ring.cap = HISTORY_CAPACITY as u32;
         ring.len = 0;
         ring.write_index = 0;
-        ring.start_round_id = ctx.accounts.feed.last_round_id.saturating_add(1); // usually 1 on fresh feed
+        // same behavior as your two-step: start after current last_round_id (0 on fresh feed)
+        ring.start_round_id = f.last_round_id.saturating_add(1); // -> 1
+
         Ok(())
     }
 
@@ -716,23 +714,11 @@ pub struct InitFeed<'info> {
     #[account(seeds = [b"config".as_ref()], bump)]
     pub config: Account<'info, ProgramConfig>,
 
+    // New Feed PDA
     #[account(init, payer = payer, space = 8 + Feed::SIZE, seeds = [b"feed".as_ref(), feed_id.as_ref()], bump)]
     pub feed: Account<'info, Feed>,
 
-    pub admin: Signer<'info>, // must equal config.admin
-
-    #[account(mut)]
-    pub payer: Signer<'info>,
-    pub system_program: Program<'info, System>,
-}
-
-#[derive(Accounts)]
-#[instruction(feed_id: [u8; 32])]
-pub struct InitHistoryRing<'info> {
-    #[account(seeds = [b"feed".as_ref(), feed_id.as_ref()], bump)]
-    pub feed: Account<'info, Feed>,
-
-    // Anchor creates at full size (no realloc) owned by this program.
+    // New HistoryRing PDA (zero-copy)
     #[account(
         init,
         payer = payer,
@@ -742,7 +728,9 @@ pub struct InitHistoryRing<'info> {
     )]
     pub history_ring: AccountLoader<'info, HistoryRing>,
 
+    /// must equal config.admin
     pub admin: Signer<'info>,
+
     #[account(mut)]
     pub payer: Signer<'info>,
     pub system_program: Program<'info, System>,

@@ -9,6 +9,7 @@
   "dependencies": {
     "@chainlink/solana-sdk": "^0.2.2",
     "@coral-xyz/anchor": "^0.31.1",
+    "@hackbg/chainlink-datastreams-consumer": "^2.1.0",
     "snappy": "^7.3.1"
   },
   "devDependencies": {

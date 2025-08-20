@@ -1,10 +1,14 @@
 import * as anchor from "@coral-xyz/anchor";
 import { Program, AnchorProvider } from "@coral-xyz/anchor";
-import { PublicKey, SystemProgram } from "@solana/web3.js";
+import { AccountMeta, PublicKey, SystemProgram } from "@solana/web3.js";
 import idl from "../target/idl/adrastia_chainlink_data_streams_feed_solana.json" with { type: "json" };
+import updaterIdl from "../target/idl/adrastia_chainlink_data_streams_feed_updater_solana.json" with { type: "json" };
 import type { AdrastiaChainlinkDataStreamsFeedSolana } from "../target/types/adrastia_chainlink_data_streams_feed_solana.js";
+import type { AdrastiaChainlinkDataStreamsFeedUpdaterSolana } from "../target/types/adrastia_chainlink_data_streams_feed_updater_solana.js";
 import * as snappy from "snappy";
 import { config as configDotEnv } from "dotenv";
+import { Report } from "@hackbg/chainlink-datastreams-consumer/src/report.js";
+import { BN } from "bn.js";
 
 configDotEnv();
 
@@ -14,6 +18,10 @@ type Feed = {
     id: string;
     decimals: number;
     desc: string;
+};
+
+type FeedWithReport = Feed & {
+    report: `0x${string}`;
 };
 
 const FEED_TESTNET_BTCUSD: Feed = {
@@ -53,6 +61,7 @@ const REPORT_TESTNET_ETHUSD_3 =
 // ---- IDs ----
 // Your program (this repo)
 const PROGRAM_ID = new PublicKey("Et6bXECAiq9PH95uGwiAG4VyUUaD8JF4GZuCaduNBH9A");
+const UPDATER_PROGRAM_ID = new PublicKey("pPcrVUVrQULhX2sF3HjYi36wiKJGsuwpAny17VTTmpj");
 
 const BOOTSTRAP_ADMIN = new PublicKey("634xiC5wufdbogSag2Q5koeRvJuUBQJ8vaU9j376oL2Q");
 
@@ -201,105 +210,201 @@ export async function ensureFeedAndRing(
     return { feed: FEED, ring: RING };
 }
 
+async function updateFeeds(provider: AnchorProvider, data: FeedWithReport[], batch?: boolean) {
+    // Override the program ID in the IDL
+    const patchedIdl = { ...idl, metadata: { ...(idl as any).metadata, address: PROGRAM_ID.toBase58() } };
+
+    const feedProgram = new Program<AdrastiaChainlinkDataStreamsFeedSolana>(patchedIdl as any, provider);
+
+    // Override the program ID in the IDL
+    const patchedBatchIdl = {
+        ...updaterIdl,
+        metadata: { ...(updaterIdl as any).metadata, address: UPDATER_PROGRAM_ID.toBase58() },
+    };
+
+    const batchProgram = new Program<AdrastiaChainlinkDataStreamsFeedUpdaterSolana>(patchedBatchIdl as any, provider);
+
+    // Derive Verifier PDA
+    const verifierAccount = verifierPda();
+
+    // Ensure feed + history ring exist
+    await ensureProgramConfig(feedProgram, BOOTSTRAP_ADMIN, {
+        verifierProgramId: VERIFIER_PROGRAM_ID,
+        verifierAccount: verifierAccount,
+        accessController: ACCESS_CONTROLLER,
+    });
+
+    if (data.length === 0) {
+        return;
+    }
+
+    const remainingAccounts: AccountMeta[] = [
+        { pubkey: PROGRAM_ID, isSigner: false, isWritable: false }, // feed_program
+        { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
+        { pubkey: verifierAccount, isSigner: false, isWritable: false },
+        { pubkey: ACCESS_CONTROLLER, isSigner: false, isWritable: false },
+        { pubkey: configPda(), isSigner: false, isWritable: false },
+        { pubkey: provider.wallet.publicKey, isSigner: true, isWritable: false }, // user
+    ];
+
+    const items = [];
+
+    for (const feed of data) {
+        const feedId = bytes32(feed.id);
+        const decimals = feed.decimals;
+        const description = ascii32(feed.desc);
+
+        const { feed: feedP, ring: ringP } = await ensureFeedAndRing(
+            feedProgram,
+            provider.wallet.publicKey,
+            feedId,
+            decimals,
+            description,
+        );
+
+        const signedReport = hexToU8a(feed.report);
+
+        // The Verifier expects the signed report to be snappy-compressed
+        const compressedReport = await snappy.compress(Buffer.from(signedReport));
+
+        // Derive config PDA from the report’s first 32 bytes
+        const verifierConfigAccount = PublicKey.findProgramAddressSync(
+            [signedReport.slice(0, 32)], // uncompressed slice
+            VERIFIER_PROGRAM_ID,
+        )[0];
+
+        const reportData = Report.decodeFullReportHex(feed.report).reportBlob.decoded;
+
+        if (batch) {
+            remainingAccounts.push(
+                { pubkey: verifierConfigAccount, isSigner: false, isWritable: false },
+                { pubkey: feedP, isSigner: false, isWritable: true },
+                { pubkey: ringP, isSigner: false, isWritable: true },
+            );
+
+            const obsTs = BigInt(reportData.observationsTimestamp);
+            items.push({
+                feedId: Array.from(feedId),
+                observationsTimestamp: new BN(obsTs.toString()),
+                signedReport: Buffer.from(compressedReport),
+            });
+        } else {
+            try {
+                console.log("\n📝 Transaction Details");
+                console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                console.log("🔑 Signer:", provider.wallet.publicKey.toString());
+
+                const tx = await feedProgram.methods
+                    .verifyAndUpdateReport(Array.from(feedId) as any, Buffer.from(compressedReport))
+                    .accounts({
+                        verifierProgramId: VERIFIER_PROGRAM_ID,
+                        verifierAccount: verifierAccount,
+                        accessController: ACCESS_CONTROLLER,
+                        user: provider.wallet.publicKey,
+                        verifierConfigAccount: verifierConfigAccount,
+                    })
+                    .rpc({ commitment: "confirmed" });
+
+                console.log("✅ Transaction successful!");
+                console.log("🔗 Signature:", tx);
+
+                // Fetch and display logs
+                const txDetails = await provider.connection.getTransaction(tx, {
+                    commitment: "confirmed",
+                    maxSupportedTransactionVersion: 0,
+                });
+
+                console.log("\n📋 Program Logs");
+                console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+
+                let indentLevel = 0;
+                txDetails!.meta!.logMessages!.forEach((log) => {
+                    if (log.includes("Program invoke")) {
+                        console.log("  ".repeat(indentLevel) + "🔄", log.trim());
+                        indentLevel++;
+                        return;
+                    }
+                    if (log.includes("Program return") || log.includes("Program consumed")) {
+                        indentLevel = Math.max(0, indentLevel - 1);
+                    }
+                    const indent = "  ".repeat(indentLevel);
+                    if (log.includes("Program log:")) {
+                        const logMessage = log.replace("Program log:", "").trim();
+                        console.log(indent + "📍", logMessage);
+                    } else if (log.includes("Program data:")) {
+                        console.log(indent + "📊", log.replace("Program data:", "").trim());
+                    }
+                });
+                console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+            } catch (error) {
+                console.log("\n❌ Transaction Failed");
+                console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                console.error("Error:", error);
+                console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+            }
+        }
+    }
+
+    if (batch) {
+        try {
+            console.log("\n🧺 Submitting batch...");
+            const txSig = await batchProgram.methods
+                .batchVerifyAndUpdate(items as any)
+                .accounts({ systemProgram: SystemProgram.programId })
+                .remainingAccounts(remainingAccounts)
+                .rpc({ commitment: "confirmed" });
+
+            console.log("✅ Batch tx signature:", txSig);
+
+            const txDetails = await provider.connection.getTransaction(txSig, {
+                commitment: "confirmed",
+                maxSupportedTransactionVersion: 0,
+            });
+
+            console.log("\n📋 Program Logs");
+            console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            let indentLevel = 0;
+            txDetails!.meta!.logMessages!.forEach((log) => {
+                if (log.includes("Program invoke")) {
+                    console.log("  ".repeat(indentLevel) + "🔄", log.trim());
+                    indentLevel++;
+                    return;
+                }
+                if (log.includes("Program return") || log.includes("Program consumed")) {
+                    indentLevel = Math.max(0, indentLevel - 1);
+                }
+                const indent = "  ".repeat(indentLevel);
+                if (log.includes("Program log:")) {
+                    console.log(indent + "📍", log.replace("Program log:", "").trim());
+                } else if (log.includes("Program data:")) {
+                    console.log(indent + "📊", log.replace("Program data:", "").trim());
+                }
+            });
+            console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+        } catch (error) {
+            console.log("\n❌ Batch Transaction Failed");
+            console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            console.error("Error:", error);
+            console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+        }
+    }
+}
+
 async function main() {
     // Provider & program
     const provider = AnchorProvider.env();
     anchor.setProvider(provider);
 
-    // Override the program ID in the IDL
-    const patchedIdl = { ...idl, metadata: { ...(idl as any).metadata, address: PROGRAM_ID.toBase58() } };
+    const feeds: FeedWithReport[] = [
+        {
+            ...FEED_TESTNET_BTCUSD,
+            report: REPORT_TESTNET_BTCUSD_1,
+        },
+    ];
 
-    const program = new Program<AdrastiaChainlinkDataStreamsFeedSolana>(patchedIdl as any, provider);
+    const batchMode = true;
 
-    // -------------------------------
-    // Example inputs (edit these)
-    // -------------------------------
-    const feedMetadata = FEED_TESTNET_WBTC;
-    const feedReport = undefined;
-
-    const feedId = bytes32(feedMetadata.id);
-    const decimals = feedMetadata.decimals;
-    const description = ascii32(feedMetadata.desc);
-
-    // Derive Verifier PDA
-    const VERIFIER_ACCOUNT = verifierPda();
-
-    // Ensure feed + history ring exist
-    await ensureProgramConfig(program, BOOTSTRAP_ADMIN, {
-        verifierProgramId: VERIFIER_PROGRAM_ID,
-        verifierAccount: VERIFIER_ACCOUNT,
-        accessController: ACCESS_CONTROLLER,
-    });
-    await ensureFeedAndRing(program, provider.wallet.publicKey, feedId, decimals, description);
-
-    if (!feedReport) {
-        return;
-    }
-
-    const signedReport = hexToU8a(feedReport);
-
-    // The Verifier expects the signed report to be snappy-compressed
-    const compressedReport = await snappy.compress(Buffer.from(signedReport));
-
-    // Derive config PDA from the report’s first 32 bytes
-    const CONFIG_ACCOUNT = PublicKey.findProgramAddressSync(
-        [signedReport.slice(0, 32)], // uncompressed slice
-        VERIFIER_PROGRAM_ID,
-    )[0];
-
-    try {
-        console.log("\n📝 Transaction Details");
-        console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-        console.log("🔑 Signer:", provider.wallet.publicKey.toString());
-
-        const tx = await program.methods
-            .verifyAndUpdateReport(Array.from(feedId) as any, Buffer.from(compressedReport))
-            .accounts({
-                verifierProgramId: VERIFIER_PROGRAM_ID,
-                verifierAccount: VERIFIER_ACCOUNT,
-                accessController: ACCESS_CONTROLLER,
-                user: provider.wallet.publicKey,
-                verifierConfigAccount: CONFIG_ACCOUNT,
-            })
-            .rpc({ commitment: "confirmed" });
-
-        console.log("✅ Transaction successful!");
-        console.log("🔗 Signature:", tx);
-
-        // Fetch and display logs
-        const txDetails = await provider.connection.getTransaction(tx, {
-            commitment: "confirmed",
-            maxSupportedTransactionVersion: 0,
-        });
-
-        console.log("\n📋 Program Logs");
-        console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-
-        let indentLevel = 0;
-        txDetails!.meta!.logMessages!.forEach((log) => {
-            if (log.includes("Program invoke")) {
-                console.log("  ".repeat(indentLevel) + "🔄", log.trim());
-                indentLevel++;
-                return;
-            }
-            if (log.includes("Program return") || log.includes("Program consumed")) {
-                indentLevel = Math.max(0, indentLevel - 1);
-            }
-            const indent = "  ".repeat(indentLevel);
-            if (log.includes("Program log:")) {
-                const logMessage = log.replace("Program log:", "").trim();
-                console.log(indent + "📍", logMessage);
-            } else if (log.includes("Program data:")) {
-                console.log(indent + "📊", log.replace("Program data:", "").trim());
-            }
-        });
-        console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
-    } catch (error) {
-        console.log("\n❌ Transaction Failed");
-        console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-        console.error("Error:", error);
-        console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
-    }
+    await updateFeeds(provider, feeds, batchMode);
 }
 
 main().catch((e) => {

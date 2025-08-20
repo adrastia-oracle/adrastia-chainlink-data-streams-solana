@@ -467,6 +467,7 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
         set_return_data(&data);
         Ok(())
     }
+
     pub fn version(_ctx: Context<NoAccounts>) -> Result<()> {
         // version 1; encode as u16 little-endian
         set_return_data(&(1u16).to_le_bytes());
@@ -676,7 +677,9 @@ impl ProgramConfig {
 
 // No-accounts context (for version()).
 #[derive(Accounts)]
-pub struct NoAccounts {}
+pub struct NoAccounts<'info> {
+    pub system_program: Program<'info, System>,
+}
 
 #[derive(Accounts)]
 pub struct InitProgramConfig<'info> {

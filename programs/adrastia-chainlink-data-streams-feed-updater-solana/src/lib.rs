@@ -1,7 +1,5 @@
-use anchor_lang::prelude::*;
+use anchor_lang::{ prelude::*, AnchorDeserialize, Discriminator, AccountDeserialize };
 use adrastia_chainlink_data_streams_feed_solana as feed_prog;
-use anchor_lang::solana_program::program::get_return_data;
-use anchor_lang::AnchorDeserialize;
 
 declare_id!("pPcrVUVrQULhX2sF3HjYi36wiKJGsuwpAny17VTTmpj");
 
@@ -40,7 +38,10 @@ pub mod adrastia_chainlink_data_streams_feed_updater_solana {
 
         let user_key = user_ai.key();
 
-        let now = Clock::get()?.unix_timestamp;
+        let now = Clock::get()
+            .ok()
+            .map(|c| c.unix_timestamp)
+            .unwrap_or(0);
 
         // For PDA sanity checks
         let feed_program_key = feed_program_ai.key();
@@ -62,41 +63,21 @@ pub mod adrastia_chainlink_data_streams_feed_updater_solana {
             require_keys_eq!(feed_key, expected_feed, ErrorCode::AccountKeyMismatch);
             require_keys_eq!(history_ring_ai.key(), expected_ring, ErrorCode::AccountKeyMismatch);
 
-            // --- Freshness check via CPI to latest_round_data ---
-            // Build ReadFeed CPI accounts (only the feed account).
-            let read_accounts = feed_prog::cpi::accounts::ReadFeed { feed: feed_ai.clone() };
-            let read_ctx = CpiContext::new(feed_program_ai.clone(), read_accounts);
+            // --- Freshness check ---
+            if let Some(onchain_ts) = read_feed_started_at(&feed_ai, &feed_program_key) {
+                // Feed has a timestamp. Let's see if our report timestamp is strictly greater than it. If not, skip.
+                if item.observations_timestamp <= onchain_ts {
+                    emit!(FeedUpdateSkipped {
+                        feed_id: item.feed_id,
+                        feed: feed_key,
+                        caller: user_key,
+                        stored_timestamp: onchain_ts,
+                        provided_timestamp: item.observations_timestamp,
+                        timestamp: now,
+                    });
 
-            let mut should_skip = false;
-
-            match feed_prog::cpi::latest_round_data(read_ctx) {
-                Ok(()) => {
-                    if let Some((pid, data)) = get_return_data() {
-                        if pid == feed_program_key {
-                            if let Ok(latest) = feed_prog::LatestRoundData::try_from_slice(&data) {
-                                let onchain_ts = latest.started_at;
-                                if item.observations_timestamp <= onchain_ts {
-                                    emit!(FeedUpdateSkipped {
-                                        feed_id: item.feed_id,
-                                        feed: feed_key,
-                                        caller: user_key,
-                                        stored_timestamp: onchain_ts,
-                                        provided_timestamp: item.observations_timestamp,
-                                        timestamp: now,
-                                    });
-                                    should_skip = true;
-                                }
-                            }
-                        }
-                    }
+                    continue;
                 }
-                Err(_e) => {
-                    // If read fails, we just proceed (nothing to emit here unless you want a diagnostic event)
-                }
-            }
-
-            if should_skip {
-                continue;
             }
 
             // Build typed CPI accounts (all AccountInfo, no lifetime mix)
@@ -237,5 +218,36 @@ fn err_code(e: &anchor_lang::error::Error) -> u32 {
                 ProgramError::Custom(c) => *c,
                 other => (u64::from(other.clone()) >> 32) as u32,
             }
+    }
+}
+
+fn read_feed_started_at(feed_ai: &AccountInfo, feed_program_key: &Pubkey) -> Option<i64> {
+    // Only proceed if owned by the feed program
+    if feed_ai.owner != feed_program_key {
+        return None;
+    }
+
+    // Borrow data; bail on any error
+    let data = feed_ai.try_borrow_data().ok()?;
+    if data.len() < 8 {
+        return None;
+    }
+
+    // Discriminator check
+    if &data[..8] != feed_prog::Feed::DISCRIMINATOR {
+        return None;
+    }
+
+    // Deserialize Feed (skip discriminator)
+    let mut cursor: &[u8] = &data[8..];
+    if let Ok(feed_acc) = feed_prog::Feed::try_deserialize(&mut cursor) {
+        if feed_acc.last_round_id == 0 {
+            // no report yet => behave like "no freshness info", i.e. don't skip
+            None
+        } else {
+            Some(feed_acc.latest.observation_timestamp)
+        }
+    } else {
+        None
     }
 }

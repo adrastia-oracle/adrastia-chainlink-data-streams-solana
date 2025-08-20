@@ -1,16 +1,19 @@
 [toolchain]
-package_manager = "yarn"
-solana_version = "2.1.0"
 anchor_version = "0.31.1"
+solana_version = "2.1.0"
+package_manager = "yarn"
 
 [features]
 resolution = true
+seeds = true
 skip-lint = false
 
-[programs.localnet]
+[programs.devnet]
+adrastia_chainlink_data_streams_feed_updater_solana = "pPcrVUVrQULhX2sF3HjYi36wiKJGsuwpAny17VTTmpj"
 adrastia_chainlink_data_streams_feed_solana = "Et6bXECAiq9PH95uGwiAG4VyUUaD8JF4GZuCaduNBH9A"
 
-[programs.devnet]
+[programs.localnet]
+adrastia_chainlink_data_streams_feed_updater_solana = "pPcrVUVrQULhX2sF3HjYi36wiKJGsuwpAny17VTTmpj"
 adrastia_chainlink_data_streams_feed_solana = "Et6bXECAiq9PH95uGwiAG4VyUUaD8JF4GZuCaduNBH9A"
 
 [registry]
@@ -18,7 +21,6 @@ url = "https://api.apr.dev"
 
 [provider]
 cluster = "devnet"
-#cluster = "localnet"
 wallet = "~/.config/solana/id.json"
 
 [scripts]

@@ -1,0 +1,22 @@
+[package]
+name = "adrastia-chainlink-data-streams-feed-updater-solana"
+version = "0.1.0"
+description = "Created with Anchor"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[features]
+default = []
+cpi = ["no-entrypoint"]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+idl-build = ["anchor-lang/idl-build"]
+
+[dependencies]
+adrastia-chainlink-data-streams-feed-solana = { path = "../adrastia-chainlink-data-streams-feed-solana", features = ["no-entrypoint", "cpi"] }
+
+# Additional required dependencies
+anchor-lang = { version = "0.31.1" }

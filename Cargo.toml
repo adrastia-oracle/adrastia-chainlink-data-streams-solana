@@ -1,6 +1,7 @@
 [workspace]
 members = [
-    "programs/*",
+  "programs/adrastia-chainlink-data-streams-feed-solana",
+  "programs/adrastia-chainlink-data-streams-feed-updater-solana",
 ]
 resolver = "2"
 

@@ -2,7 +2,6 @@ use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
     instruction::Instruction,
     program::{ get_return_data, invoke, set_return_data },
-    program_error::ProgramError,
     pubkey,
 };
 use chainlink_solana_data_streams::VerifierInstructions;
@@ -314,7 +313,7 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
                         emit!(HookFailed {
                             hook_type: HookType::PreUpdate as u8,
                             program: hcfg.program,
-                            reason_code: hook_error_code(e.into()),
+                            reason_code: err_code(&e),
                             timestamp: now,
                         });
                     } else {
@@ -386,7 +385,7 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
                         emit!(HookFailed {
                             hook_type: HookType::PostUpdate as u8,
                             program: hcfg.program,
-                            reason_code: hook_error_code(e.into()),
+                            reason_code: err_code(&e),
                             timestamp: now,
                         });
                     } else {
@@ -588,12 +587,20 @@ fn invoke_hook(program_id: Pubkey, disc: u8, payload: &HookPayload) -> Result<()
     };
     invoke(&ix, &[]).map_err(|e| e.into())
 }
-fn hook_error_code(e: ProgramError) -> u32 {
+
+fn err_code(e: &anchor_lang::error::Error) -> u32 {
+    use anchor_lang::error::Error as AErr;
+    use anchor_lang::solana_program::program_error::ProgramError;
+
     match e {
-        ProgramError::Custom(c) => c,
-        ProgramError::InvalidInstructionData => 2,
-        ProgramError::InvalidAccountData => 3,
-        _ => 1,
+        AErr::AnchorError(ae) => ae.error_code_number,
+        AErr::ProgramError(pe) =>
+            match &pe.program_error {
+                // Keep Solana’s CUSTOM_ZERO convention stable
+                ProgramError::Custom(0) => (u64::from(ProgramError::Custom(0)) >> 32) as u32,
+                ProgramError::Custom(c) => *c,
+                other => (u64::from(other.clone()) >> 32) as u32,
+            }
     }
 }
 

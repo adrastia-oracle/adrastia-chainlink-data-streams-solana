@@ -21,7 +21,7 @@ type Feed = {
 };
 
 type FeedWithReport = Feed & {
-    report: `0x${string}`;
+    report?: `0x${string}`;
 };
 
 const FEED_TESTNET_BTCUSD: Feed = {
@@ -36,10 +36,28 @@ const FEED_TESTNET_ETHUSD: Feed = {
     desc: "ETH/USD",
 };
 
-const FEED_TESTNET_WBTC: Feed = {
+const FEED_TESTNET_WBTCUSD: Feed = {
     id: "0x0003986bae710e410e6a6ec824db9ac91f97f6dd47fc5b28d028c14e825c5891",
     decimals: 18,
     desc: "wBTC/USD",
+};
+
+const FEED_TESTNET_USDCUSD: Feed = {
+    id: "0x0003dc85e8b01946bf9dfd8b0db860129181eb6105a8c8981d9f28e00b6f60d9",
+    decimals: 18,
+    desc: "USDC/USD",
+};
+
+const FEED_TESTNET_USDTUSD: Feed = {
+    id: "0x00032874077216155926e26c159c1c20a572921371d9de605fe9633e48d136f9",
+    decimals: 18,
+    desc: "USDT/USD",
+};
+
+const FEED_TESTNET_AAPLUSD: Feed = {
+    id: "0x0008b8ad9dc4061d1064033c3abc8a4e3f056e5b61d8533e8190eb96ef3b330b",
+    decimals: 18,
+    desc: "AAPL/USD",
 };
 
 // ---- Reports ----
@@ -262,6 +280,10 @@ async function updateFeeds(provider: AnchorProvider, data: FeedWithReport[], bat
             description,
         );
 
+        if (!feed.report) {
+            continue;
+        }
+
         const signedReport = hexToU8a(feed.report);
 
         // The Verifier expects the signed report to be snappy-compressed
@@ -345,7 +367,7 @@ async function updateFeeds(provider: AnchorProvider, data: FeedWithReport[], bat
         }
     }
 
-    if (batch) {
+    if (batch && items.length > 0) {
         try {
             console.log("\n🧺 Submitting batch...");
             const txSig = await batchProgram.methods
@@ -395,10 +417,25 @@ async function main() {
     const provider = AnchorProvider.env();
     anchor.setProvider(provider);
 
+    // Initialize feeds (since no reports provided)
     const feeds: FeedWithReport[] = [
         {
+            ...FEED_TESTNET_USDCUSD,
+        },
+        {
+            ...FEED_TESTNET_AAPLUSD,
+        },
+        {
             ...FEED_TESTNET_BTCUSD,
-            report: REPORT_TESTNET_BTCUSD_1,
+        },
+        {
+            ...FEED_TESTNET_ETHUSD,
+        },
+        {
+            ...FEED_TESTNET_USDTUSD,
+        },
+        {
+            ...FEED_TESTNET_WBTCUSD,
         },
     ];
 

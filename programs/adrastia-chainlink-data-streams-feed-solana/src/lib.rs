@@ -26,6 +26,9 @@ pub const GLOBAL_BOOTSTRAP_ADMIN: Pubkey = pubkey!("634xiC5wufdbogSag2Q5koeRvJuU
 pub const HISTORY_CAPACITY: usize = 128; // adjust as needed
 pub const MAX_HOOK_TYPES: usize = 2; // PreUpdate, PostUpdate
 
+pub const DISC_PRE_UPDATE: [u8; 8] = [240, 39, 100, 139, 159, 15, 164, 76]; // global:on_pre_report_update
+pub const DISC_POST_UPDATE: [u8; 8] = [197, 67, 103, 53, 250, 28, 202, 177]; // global:on_post_report_update
+
 #[program]
 pub mod adrastia_chainlink_data_streams_feed_solana {
     use super::*;
@@ -403,15 +406,17 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
                     observation_timestamp: report.observations_timestamp,
                     storage_timestamp: now,
                 };
-                if let Err(e) = invoke_hook(hcfg.program, 0, &payload) {
+                let code = invoke_hook(hcfg.program, &DISC_PRE_UPDATE, &payload)?;
+                if code != 0 {
                     emit!(HookFailed {
                         hook_type: HookType::PreUpdate as u8,
                         program: hcfg.program,
-                        reason_code: err_code(&e),
+                        reason_code: code,
                         timestamp: now,
                     });
                     if !hcfg.allow_failure {
-                        return fail_code(feed, err_code(&e));
+                        msg!("Pre-update hook failed with error code {}", code);
+                        return fail(feed, ErrorCode::HookFailedError);
                     }
                 }
             }
@@ -487,13 +492,18 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
                     observation_timestamp: rec.observation_timestamp,
                     storage_timestamp: now,
                 };
-                if let Err(e) = invoke_hook(hcfg.program, 1, &payload) {
+                let code = invoke_hook(hcfg.program, &DISC_POST_UPDATE, &payload)?;
+                if code != 0 {
                     emit!(HookFailed {
                         hook_type: HookType::PostUpdate as u8,
                         program: hcfg.program,
-                        reason_code: err_code(&e),
+                        reason_code: code,
                         timestamp: now,
                     });
+                    if !hcfg.allow_failure {
+                        msg!("Post-update hook failed with error code {}", code);
+                        return fail(feed, ErrorCode::HookFailedError);
+                    }
                 }
             }
         }
@@ -683,15 +693,41 @@ pub struct HookPayload {
     pub storage_timestamp: i64,
 }
 
-fn invoke_hook(program_id: Pubkey, disc: u8, payload: &HookPayload) -> Result<()> {
-    let mut data = vec![disc];
+fn invoke_hook(program_id: Pubkey, discriminator: &[u8; 8], payload: &HookPayload) -> Result<u32> {
+    let mut data = Vec::with_capacity(8 + payload.try_to_vec().unwrap().len());
+    data.extend_from_slice(discriminator);
     data.extend(payload.try_to_vec().map_err(|_| error!(ErrorCode::InternalSer))?);
+
     let ix = Instruction {
         program_id,
         accounts: vec![],
         data,
     };
-    invoke(&ix, &[]).map_err(|e| e.into())
+
+    // Default to "no return data" error
+    let mut code: u32 = u32::from(ErrorCode::BadHookReturn);
+
+    // --- Try CPI call ---
+    match invoke(&ix, &[]) {
+        Ok(_) => {
+            // Success path → now check return data
+        }
+        Err(e) => {
+            // For future-proofing: if Solana ever allows catching this
+            code = err_code(&e.into());
+        }
+    }
+
+    // --- Inspect return data regardless ---
+    if let Some((pid, ret)) = get_return_data() {
+        if pid == program_id {
+            if let Ok(res) = HookResult::try_from_slice(&ret) {
+                code = res.code;
+            }
+        }
+    }
+
+    Ok(code)
 }
 
 fn err_code(e: &anchor_lang::error::Error) -> u32 {
@@ -713,6 +749,11 @@ fn err_code(e: &anchor_lang::error::Error) -> u32 {
 #[derive(AnchorSerialize, AnchorDeserialize)]
 pub struct UpdateAndVerifyResult {
     pub code: u32, // 0 = OK, otherwise an ErrorCode discriminant
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize)]
+pub struct HookResult {
+    pub code: u32, // 0 = OK, otherwise error discriminant
 }
 
 fn set_result(code: u32) {
@@ -1069,6 +1110,10 @@ pub enum ErrorCode {
     UnableToLoadHistoryRing,
     #[msg("Clock unavailable")]
     ClockUnavailable,
+    #[msg("Bad hook return data")]
+    BadHookReturn,
+    #[msg("Hook failed")]
+    HookFailedError,
 }
 
 impl ErrorCode {

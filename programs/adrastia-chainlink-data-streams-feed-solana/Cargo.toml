@@ -24,4 +24,5 @@ anchor-lang = { version = "0.31.1" }
 # DO NOT pin a different solana-program here; use the workspace one:
 solana-program = { workspace = true }
 num-traits = "0.2"
+num-derive = "0.4"
 bytemuck = { version = "1.14", features = ["derive"] }

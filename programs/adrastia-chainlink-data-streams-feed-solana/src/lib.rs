@@ -14,6 +14,7 @@ use chainlink_data_streams_report::report::{
     v8::ReportDataV8,
 };
 use num_traits::cast::ToPrimitive;
+use num_derive::FromPrimitive;
 
 declare_id!("Et6bXECAiq9PH95uGwiAG4VyUUaD8JF4GZuCaduNBH9A");
 
@@ -222,26 +223,81 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
     }
 
     // ---------- Verify + Update ----------
+
     pub fn verify_and_update_report(
         ctx: Context<UpdateFromReport>,
         feed_id: [u8; 32],
         signed_report: Vec<u8>
     ) -> Result<()> {
-        require!(!signed_report.is_empty(), ErrorCode::NoReportData);
+        // Call into the try_ version
+        try_verify_and_update_report(ctx, feed_id, signed_report)?;
+
+        // Inspect return data
+        if let Some((pid, data)) = get_return_data() {
+            if pid == crate::ID {
+                // Decode UpdateAndVerifyResult
+                let res = UpdateAndVerifyResult::try_from_slice(&data).map_err(|_| error!(ErrorCode::DecodingError))?;
+
+                if res.code != 0 {
+                    // Try to map back into a known ErrorCode
+                    if let Some(ec) = ErrorCode::from_anchor_code(res.code) {
+                        return Err(error!(ec)); // bubbles up as proper Anchor error w/ name + code
+                    } else {
+                        // If it doesn't match a defined variant, bubble as raw custom error
+                        return Err(ProgramError::Custom(res.code).into());
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn try_verify_and_update_report(
+        ctx: Context<UpdateFromReport>,
+        feed_id: [u8; 32],
+        signed_report: Vec<u8>
+    ) -> Result<()> {
+        // Empty report (no guard yet)
+        if signed_report.is_empty() {
+            set_result(u32::from(ErrorCode::NoReportData));
+            return Ok(());
+        }
 
         let feed = &mut ctx.accounts.feed;
         let cfg = &ctx.accounts.config;
 
-        // Admin pause + tuple checks (now pinned against global config)
-        require!(!feed.paused, ErrorCode::UpdatesPaused);
-        require!(ctx.accounts.verifier_program_id.key() == cfg.verifier_program_id, ErrorCode::BadVerifierProgram);
-        require!(ctx.accounts.verifier_account.key() == cfg.verifier_account, ErrorCode::BadVerifierAccount);
-        require!(ctx.accounts.access_controller.key() == cfg.access_controller, ErrorCode::BadAccessController);
-        require!(ctx.accounts.verifier_program_id.executable, ErrorCode::BadVerifierProgram);
-        require!(*ctx.accounts.verifier_account.owner == cfg.verifier_program_id, ErrorCode::BadVerifierAccountOwner);
+        // Upfront checks (no guard yet)
+        if feed.paused {
+            set_result(u32::from(ErrorCode::UpdatesPaused));
+            return Ok(());
+        }
+        if ctx.accounts.verifier_program_id.key() != cfg.verifier_program_id {
+            set_result(u32::from(ErrorCode::BadVerifierProgram));
+            return Ok(());
+        }
+        if ctx.accounts.verifier_account.key() != cfg.verifier_account {
+            set_result(u32::from(ErrorCode::BadVerifierAccount));
+            return Ok(());
+        }
+        if ctx.accounts.access_controller.key() != cfg.access_controller {
+            set_result(u32::from(ErrorCode::BadAccessController));
+            return Ok(());
+        }
+        if !ctx.accounts.verifier_program_id.executable {
+            set_result(u32::from(ErrorCode::BadVerifierProgram));
+            return Ok(());
+        }
+        if *ctx.accounts.verifier_account.owner != cfg.verifier_program_id {
+            set_result(u32::from(ErrorCode::BadVerifierAccountOwner));
+            return Ok(());
+        }
+        if feed.reentrancy_guard {
+            set_result(u32::from(ErrorCode::Reentrancy));
+            return Ok(());
+        }
 
-        // --- Reentrancy guard: set before any CPI out of this program ---
-        require!(!feed.reentrancy_guard, ErrorCode::Reentrancy);
+        // --- Enter guarded region ---
         feed.reentrancy_guard = true;
 
         // CPI to Verifier
@@ -250,11 +306,11 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
             &ctx.accounts.verifier_account.key(),
             &ctx.accounts.access_controller.key(),
             &ctx.accounts.user.key(),
-            &ctx.accounts.verifier_config_account.key(), // external verifier config PDA
+            &ctx.accounts.verifier_config_account.key(),
             signed_report
         );
         if
-            let Err(_) = invoke(
+            let Err(e) = invoke(
                 &ix,
                 &[
                     ctx.accounts.verifier_account.to_account_info(),
@@ -264,38 +320,77 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
                 ]
             )
         {
-            return Err(error!(ErrorCode::VerifierCpiFailed));
+            return fail_code(feed, err_code(&e.into()));
         }
 
-        // Return-data binding + decode (version-aware, based on Chainlink layout)
-        let (pid, ret) = get_return_data().ok_or_else(|| error!(ErrorCode::BadVerifierReturnData))?;
-        require!(pid == ctx.accounts.verifier_program_id.key(), ErrorCode::BadVerifierProgram);
+        // Verifier return data
+        let (pid, ret) = match get_return_data() {
+            Some(x) => x,
+            None => {
+                return fail(feed, ErrorCode::BadVerifierReturnData);
+            }
+        };
+        if pid != ctx.accounts.verifier_program_id.key() {
+            return fail(feed, ErrorCode::BadVerifierProgram);
+        }
 
-        // feed_id is the first 32 bytes; version is the first 2 bytes of feed_id (big-endian)
-        let (version, header_feed_id) = parse_header(&ret)?;
-        require!(header_feed_id == feed_id, ErrorCode::FeedMismatch);
-        require!(feed.feed_id == feed_id, ErrorCode::FeedMismatch);
+        // Parse header (use InvalidReportData if malformed)
+        let (version, header_feed_id) = match parse_header(&ret) {
+            Ok(x) => x,
+            Err(_) => {
+                return fail(feed, ErrorCode::InvalidReportData);
+            }
+        };
+        if header_feed_id != feed_id || feed.feed_id != feed_id {
+            return fail(feed, ErrorCode::FeedMismatch);
+        }
 
-        // Decode to normalized shape
-        let report = decode_report_by_version(&ret, version)?;
-        require!(report.feed_id == FeedId(feed_id), ErrorCode::FeedMismatch);
+        // Decode by version
+        let report = match decode_report_by_version(&ret, version) {
+            Ok(r) => r,
+            Err(e) => {
+                // e already carries the specific InvalidV*Report code
+                // turn it into a u32 and finish
+                return fail_code(feed, err_code(&e.into()));
+            }
+        };
+        if report.feed_id != FeedId(feed_id) {
+            return fail(feed, ErrorCode::FeedMismatch);
+        }
 
-        let now = Clock::get()?.unix_timestamp;
-        require!(report.observations_timestamp != 0, ErrorCode::InvalidReport);
-        require!(now >= report.observations_timestamp, ErrorCode::ObservationInFuture);
-        require!(now >= report.valid_from_timestamp, ErrorCode::ReportNotValidYet);
+        let now = match Clock::get() {
+            Ok(c) => c.unix_timestamp,
+            Err(_) => {
+                return fail(feed, ErrorCode::ClockUnavailable);
+            }
+        };
+        if report.observations_timestamp == 0 {
+            return fail(feed, ErrorCode::InvalidReport);
+        }
+        if now < report.observations_timestamp {
+            return fail(feed, ErrorCode::ObservationInFuture);
+        }
+        if now < report.valid_from_timestamp {
+            return fail(feed, ErrorCode::ReportNotValidYet);
+        }
 
         let last = feed.latest;
         if last.round_id != 0 {
-            require!(
-                !(report.price_i128 == last.price && report.observations_timestamp == last.observation_timestamp),
-                ErrorCode::DuplicateReport
-            );
-            require!(report.observations_timestamp > last.observation_timestamp, ErrorCode::StaleReport);
+            if report.price_i128 == last.price && report.observations_timestamp == last.observation_timestamp {
+                return fail(feed, ErrorCode::DuplicateReport);
+            }
+            if report.observations_timestamp <= last.observation_timestamp {
+                return fail(feed, ErrorCode::StaleReport);
+            }
         }
 
         // New round id
-        let new_round_id = feed.last_round_id.checked_add(1).ok_or(error!(ErrorCode::NumericalOverflow))?;
+        let new_round_id = match feed.last_round_id.checked_add(1) {
+            Some(x) => x,
+            None => {
+                return fail(feed, ErrorCode::NumericalOverflow);
+            }
+        };
 
         // PRE-HOOK
         if is_hook_set(feed.active_hook_types, HookType::PreUpdate) {
@@ -309,28 +404,35 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
                     storage_timestamp: now,
                 };
                 if let Err(e) = invoke_hook(hcfg.program, 0, &payload) {
-                    if hcfg.allow_failure {
-                        emit!(HookFailed {
-                            hook_type: HookType::PreUpdate as u8,
-                            program: hcfg.program,
-                            reason_code: err_code(&e),
-                            timestamp: now,
-                        });
-                    } else {
-                        return Err(e);
+                    emit!(HookFailed {
+                        hook_type: HookType::PreUpdate as u8,
+                        program: hcfg.program,
+                        reason_code: err_code(&e),
+                        timestamp: now,
+                    });
+                    if !hcfg.allow_failure {
+                        return fail_code(feed, err_code(&e));
                     }
                 }
             }
         }
 
-        // Append to ring (O(1))
+        // Append to ring
         {
-            let mut ring = ctx.accounts.history_ring.load_mut()?;
-            require!(ring.feed_id == feed_id, ErrorCode::HistoryRingMismatch);
+            let mut ring = match ctx.accounts.history_ring.load_mut() {
+                Ok(r) => r,
+                Err(_) => {
+                    return fail(feed, ErrorCode::UnableToLoadHistoryRing);
+                }
+            };
+            if ring.feed_id != feed_id {
+                return fail(feed, ErrorCode::HistoryRingMismatch);
+            }
             let cap = ring.cap as u32;
             let len = ring.len;
             let w = ring.write_index;
             let idx = (w % cap) as usize;
+
             ring.records[idx] = RoundRecord {
                 price: report.price_i128,
                 observation_timestamp: report.observations_timestamp,
@@ -345,11 +447,16 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
                     ring.start_round_id = new_round_id;
                 }
             } else {
-                ring.start_round_id = ring.start_round_id.checked_add(1).ok_or(error!(ErrorCode::NumericalOverflow))?;
+                ring.start_round_id = match ring.start_round_id.checked_add(1) {
+                    Some(x) => x,
+                    None => {
+                        return fail(feed, ErrorCode::NumericalOverflow);
+                    }
+                };
             }
         }
 
-        // Update latest in feed
+        // Update latest
         let rec = TruncatedReport {
             price: report.price_i128,
             observation_timestamp: report.observations_timestamp,
@@ -369,7 +476,7 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
             timestamp: now,
         });
 
-        // POST-HOOK
+        // POST-HOOK (never fatal after state change)
         if is_hook_set(feed.active_hook_types, HookType::PostUpdate) {
             let hcfg = feed.hooks[HookType::PostUpdate as usize];
             if hcfg.program != Pubkey::default() {
@@ -381,22 +488,21 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
                     storage_timestamp: now,
                 };
                 if let Err(e) = invoke_hook(hcfg.program, 1, &payload) {
-                    if hcfg.allow_failure {
-                        emit!(HookFailed {
-                            hook_type: HookType::PostUpdate as u8,
-                            program: hcfg.program,
-                            reason_code: err_code(&e),
-                            timestamp: now,
-                        });
-                    } else {
-                        return Err(e);
-                    }
+                    emit!(HookFailed {
+                        hook_type: HookType::PostUpdate as u8,
+                        program: hcfg.program,
+                        reason_code: err_code(&e),
+                        timestamp: now,
+                    });
                 }
             }
         }
 
-        // Clear reentrancy guard
+        // Success: clear guard & return 0
         feed.reentrancy_guard = false;
+
+        // Set result
+        set_result(0);
         Ok(())
     }
 
@@ -604,6 +710,17 @@ fn err_code(e: &anchor_lang::error::Error) -> u32 {
     }
 }
 
+#[derive(AnchorSerialize, AnchorDeserialize)]
+pub struct UpdateAndVerifyResult {
+    pub code: u32, // 0 = OK, otherwise an ErrorCode discriminant
+}
+
+fn set_result(code: u32) {
+    let res = UpdateAndVerifyResult { code };
+    let bytes = res.try_to_vec().unwrap();
+    set_return_data(&bytes);
+}
+
 // Parse feed_id as the *first 32 bytes* and version from its first two bytes (big-endian).
 fn parse_header(ret: &[u8]) -> Result<(u16, [u8; 32])> {
     require!(ret.len() >= 32, ErrorCode::InvalidReportData);
@@ -667,6 +784,18 @@ fn decode_report_by_version(ret: &[u8], version: u16) -> Result<NormalizedReport
         }
         _ => Err(error!(ErrorCode::InvalidReportVersion)),
     }
+}
+
+fn fail(feed: &mut Account<Feed>, code: ErrorCode) -> Result<()> {
+    feed.reentrancy_guard = false;
+    set_result(u32::from(code));
+    Ok(())
+}
+
+fn fail_code(feed: &mut Account<Feed>, raw: u32) -> Result<()> {
+    feed.reentrancy_guard = false;
+    set_result(raw);
+    Ok(())
 }
 
 // ---------- Accounts ----------
@@ -856,6 +985,7 @@ pub struct HookConfigUpdated {
 // ---------- Errors ----------
 
 #[error_code]
+#[derive(FromPrimitive)]
 pub enum ErrorCode {
     #[msg("No valid report data found")]
     NoReportData,
@@ -933,4 +1063,17 @@ pub enum ErrorCode {
     FeedAdminNotChanged,
     #[msg("Admin pubkey cannot be zero")]
     AdminCannotBeZero,
+    #[msg("Decoding error occurred")]
+    DecodingError,
+    #[msg("Unable to load history ring")]
+    UnableToLoadHistoryRing,
+    #[msg("Clock unavailable")]
+    ClockUnavailable,
+}
+
+impl ErrorCode {
+    pub fn from_anchor_code(code: u32) -> Option<Self> {
+        // Anchor error codes always start at 6000
+        num_traits::FromPrimitive::from_u32(code.saturating_sub(6000))
+    }
 }

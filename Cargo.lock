@@ -21,6 +21,8 @@ version = "0.1.0"
 dependencies = [
  "adrastia-chainlink-data-streams-feed-solana",
  "anchor-lang",
+ "num-derive",
+ "num-traits",
 ]
 
 [[package]]

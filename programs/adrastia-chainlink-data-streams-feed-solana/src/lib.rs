@@ -303,6 +303,9 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
         // --- Enter guarded region ---
         feed.reentrancy_guard = true;
 
+        // Precaution: Clear return data
+        clear_return_data();
+
         // CPI to Verifier
         let ix: Instruction = VerifierInstructions::verify(
             &ctx.accounts.verifier_program_id.key(),
@@ -323,19 +326,16 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
                 ]
             )
         {
-            return fail_code(feed, err_code(&e.into()));
+            return fail_code(feed, err_code(e));
         }
 
         // Verifier return data
-        let (pid, ret) = match get_return_data() {
-            Some(x) => x,
-            None => {
+        let (_pid, ret) = match get_return_data() {
+            Some((pid, ret)) if pid == ctx.accounts.verifier_program_id.key() => (pid, ret),
+            _ => {
                 return fail(feed, ErrorCode::BadVerifierReturnData);
             }
         };
-        if pid != ctx.accounts.verifier_program_id.key() {
-            return fail(feed, ErrorCode::BadVerifierProgram);
-        }
 
         // Parse header (use InvalidReportData if malformed)
         let (version, header_feed_id) = match parse_header(&ret) {
@@ -354,7 +354,7 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
             Err(e) => {
                 // e already carries the specific InvalidV*Report code
                 // turn it into a u32 and finish
-                return fail_code(feed, err_code(&e.into()));
+                return fail_code(feed, err_code(e));
             }
         };
         if report.feed_id != FeedId(feed_id) {
@@ -406,7 +406,10 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
                     observation_timestamp: report.observations_timestamp,
                     storage_timestamp: now,
                 };
-                let code = invoke_hook(hcfg.program, &DISC_PRE_UPDATE, &payload)?;
+                let code = match invoke_hook(hcfg.program, &DISC_PRE_UPDATE, &payload) {
+                    Ok(c) => c,
+                    Err(_) => u32::from(ErrorCode::BadHookReturn), // or ErrorCode::InternalSer as you prefer
+                };
                 if code != 0 {
                     emit!(HookFailed {
                         hook_type: HookType::PreUpdate as u8,
@@ -481,7 +484,7 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
             timestamp: now,
         });
 
-        // POST-HOOK (never fatal after state change)
+        // POST-HOOK
         if is_hook_set(feed.active_hook_types, HookType::PostUpdate) {
             let hcfg = feed.hooks[HookType::PostUpdate as usize];
             if hcfg.program != Pubkey::default() {
@@ -492,7 +495,10 @@ pub mod adrastia_chainlink_data_streams_feed_solana {
                     observation_timestamp: rec.observation_timestamp,
                     storage_timestamp: now,
                 };
-                let code = invoke_hook(hcfg.program, &DISC_POST_UPDATE, &payload)?;
+                let code = match invoke_hook(hcfg.program, &DISC_POST_UPDATE, &payload) {
+                    Ok(c) => c,
+                    Err(_) => u32::from(ErrorCode::BadHookReturn),
+                };
                 if code != 0 {
                     emit!(HookFailed {
                         hook_type: HookType::PostUpdate as u8,
@@ -694,9 +700,10 @@ pub struct HookPayload {
 }
 
 fn invoke_hook(program_id: Pubkey, discriminator: &[u8; 8], payload: &HookPayload) -> Result<u32> {
-    let mut data = Vec::with_capacity(8 + payload.try_to_vec().unwrap().len());
+    let payload_bytes = payload.try_to_vec().map_err(|_| error!(ErrorCode::InternalSer))?;
+    let mut data = Vec::with_capacity(8 + payload_bytes.len());
     data.extend_from_slice(discriminator);
-    data.extend(payload.try_to_vec().map_err(|_| error!(ErrorCode::InternalSer))?);
+    data.extend_from_slice(&payload_bytes);
 
     let ix = Instruction {
         program_id,
@@ -707,6 +714,9 @@ fn invoke_hook(program_id: Pubkey, discriminator: &[u8; 8], payload: &HookPayloa
     // Default to "no return data" error
     let mut code: u32 = u32::from(ErrorCode::BadHookReturn);
 
+    // Precaution: Clear return data
+    clear_return_data();
+
     // --- Try CPI call ---
     match invoke(&ix, &[]) {
         Ok(_) => {
@@ -714,7 +724,7 @@ fn invoke_hook(program_id: Pubkey, discriminator: &[u8; 8], payload: &HookPayloa
         }
         Err(e) => {
             // For future-proofing: if Solana ever allows catching this
-            code = err_code(&e.into());
+            code = err_code(e);
         }
     }
 
@@ -730,11 +740,11 @@ fn invoke_hook(program_id: Pubkey, discriminator: &[u8; 8], payload: &HookPayloa
     Ok(code)
 }
 
-fn err_code(e: &anchor_lang::error::Error) -> u32 {
+fn err_code<E>(e: E) -> u32 where E: Into<anchor_lang::error::Error> {
     use anchor_lang::error::Error as AErr;
     use anchor_lang::solana_program::program_error::ProgramError;
 
-    match e {
+    match e.into() {
         AErr::AnchorError(ae) => ae.error_code_number,
         AErr::ProgramError(pe) =>
             match &pe.program_error {
@@ -758,8 +768,16 @@ pub struct HookResult {
 
 fn set_result(code: u32) {
     let res = UpdateAndVerifyResult { code };
-    let bytes = res.try_to_vec().unwrap();
-    set_return_data(&bytes);
+    if let Ok(bytes) = res.try_to_vec() {
+        set_return_data(&bytes);
+    } else {
+        // As a fallback, set an empty payload (or a well-known sentinel)
+        set_return_data(&[]);
+    }
+}
+
+fn clear_return_data() {
+    set_return_data(&[]);
 }
 
 // Parse feed_id as the *first 32 bytes* and version from its first two bytes (big-endian).
@@ -1117,6 +1135,8 @@ pub enum ErrorCode {
 }
 
 impl ErrorCode {
+    /// Convert an Anchor error code to our ErrorCode. We assume that the default Anchor error base is 6000; if not,
+    /// we need to adjust accordingly.
     pub fn from_anchor_code(code: u32) -> Option<Self> {
         // Anchor error codes always start at 6000
         num_traits::FromPrimitive::from_u32(code.saturating_sub(6000))

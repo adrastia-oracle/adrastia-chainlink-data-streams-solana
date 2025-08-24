@@ -89,6 +89,14 @@ pub mod adrastia_chainlink_data_streams_feed_updater_solana {
         let config_ai = ra[4].clone();
         let user_ai = ra[5].clone();
 
+        let feed_program_key = feed_program_ai.key();
+
+        let (expected_cfg, _) = Pubkey::find_program_address(&[b"config"], &feed_program_key);
+        if config_ai.key() != expected_cfg || config_ai.owner.key() != feed_program_key {
+            set_result(u32::from(ErrorCode::AccountKeyMismatch));
+            return Ok(());
+        }
+
         if !user_ai.is_signer {
             set_result(u32::from(ErrorCode::UserNotSigner));
             return Ok(());
@@ -102,7 +110,6 @@ pub mod adrastia_chainlink_data_streams_feed_updater_solana {
                 return Ok(());
             }
         };
-        let feed_program_key = feed_program_ai.key();
 
         let mut success_count = 0;
 
@@ -116,7 +123,12 @@ pub mod adrastia_chainlink_data_streams_feed_updater_solana {
             // PDA sanity check
             let (expected_feed, _) = Pubkey::find_program_address(&[b"feed", item.feed_id.as_ref()], &feed_program_key);
             let (expected_ring, _) = Pubkey::find_program_address(&[b"ring", item.feed_id.as_ref()], &feed_program_key);
-            if feed_key != expected_feed || history_ring_ai.key() != expected_ring {
+            if
+                feed_key != expected_feed ||
+                feed_ai.owner.key() != feed_program_key ||
+                history_ring_ai.key() != expected_ring ||
+                history_ring_ai.owner.key() != feed_program_key
+            {
                 emit!(FeedUpdateFailed {
                     feed_id: item.feed_id,
                     feed: feed_key,
